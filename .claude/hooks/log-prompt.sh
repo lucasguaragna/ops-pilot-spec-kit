@@ -10,6 +10,7 @@ mkdir -p "$dir"
 
 prompt=$(jq -r '
   (.prompt // "")
+  | if startswith("<task-notification>") then "" else . end
   | reduce ("ide_opened_file", "ide_selection", "browser_instruction") as $tag
       (.; gsub("<\($tag)>[\\s\\S]*?</\($tag)>"; ""))
   | sub("^\\s+"; "")
