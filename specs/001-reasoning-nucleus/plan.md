@@ -18,7 +18,7 @@ without network. See [research.md](research.md) for decisions.
 **Primary Dependencies**: `langchain` 1.6 (added for `createAgent`), `@langchain/langgraph` 1.6,
 `@langchain/openai` 1.8, `@langchain/core` 1.3, `zod` 4
 
-**Storage**: In-memory, one process. MySQL is deferred (see Complexity Tracking).
+**Storage**: `data/db.json` for runs, memory for tests. MySQL is deferred (see Complexity Tracking).
 
 **Testing**: `node:test` through `tsx`, using a fake chat model and no network
 
@@ -79,8 +79,10 @@ src/
 ├── store/
 │   ├── in-memory-store.ts       # Pure transitions plus a thin stateful wrapper
 │   ├── in-memory-store.test.ts
+│   ├── json-file-store.ts       # data/db.json backend, validated on load
+│   ├── json-file-store.test.ts
 │   ├── seed-data.ts             # 5 services, 6 alerts
-│   └── seed.ts                  # Seed command
+│   └── seed.ts                  # Seed command, writes data/db.json
 ├── trace/
 │   ├── format.ts                # Pure trace and metrics text formatting
 │   ├── format.test.ts

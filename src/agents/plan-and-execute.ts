@@ -7,81 +7,130 @@ import type { ReasoningStrategy, RunResult, TraceEvent } from "../domain/types.t
 import { LlmCallCounter } from "./llm-counter.ts";
 import type { StrategyDependencies } from "./react.ts";
 import { isIterationLimitError, toRunError } from "./run-outcome.ts";
+import { structured } from "./structured-output.ts";
 
 export const MAX_STEPS = 8;
 export const PLAN_TOOL_NAME = "plan";
+export const REPLAN_TOOL_NAME = "replan";
 
-const Decision = z.object({
-  steps: z.array(z.string()).describe("Steps still to do, in order. Empty when the request is done."),
-  answer: z.string().optional().describe("Final answer for the user. Required when steps is empty."),
+const planSchema = z.object({
+  steps: z.array(z.string()).describe("Short, ordered steps, each doable with the available tools."),
 });
-type Decision = z.infer<typeof Decision>;
 
-interface StepResult {
-  step: string;
-  result: string;
-}
+const replanSchema = z.object({
+  action: z
+    .enum(["continue", "adjust", "finish"])
+    .describe("continue: keep the remaining plan. adjust: replace it with steps. finish: answer now."),
+  steps: z.array(z.string()).optional().describe("The new remaining steps. Only for adjust."),
+  answer: z.string().optional().describe("The final answer for the user. Only for finish."),
+});
+export type Replan = z.infer<typeof replanSchema>;
 
-const PlanState = Annotation.Root({
+/** A completed step and what it produced. */
+type Done = [step: string, result: string];
+
+const PEState = Annotation.Root({
   input: Annotation<string>,
   plan: Annotation<string[]>,
-  pastSteps: Annotation<StepResult[]>,
-  answer: Annotation<string | null>,
-  limitReached: Annotation<boolean>,
-  trace: Annotation<TraceEvent[]>({ reducer: (current, next) => current.concat(next), default: () => [] }),
+  done: Annotation<Done[]>({ reducer: (a, b) => a.concat(b), default: () => [] }),
+  answer: Annotation<string | undefined>,
+  trace: Annotation<TraceEvent[]>({ reducer: (a, b) => a.concat(b), default: () => [] }),
 });
-type PlanState = typeof PlanState.State;
+type PEState = typeof PEState.State;
 
 const PLANNER_PROMPT =
   "You are OpsPilot's planner for production alerts and incidents. Break the request into the " +
-  "fewest steps, each one doable with a single round of tool calls. If nothing needs doing, return " +
-  "no steps and answer directly.";
+  "fewest short steps, each one doable with a single round of calls to these tools only:\n" +
+  "{tools}\nWrite each step as a plain instruction that names every value the tool needs, not as a " +
+  "function call. When the request names services or alerts loosely, start with a step that lists " +
+  "the alerts, so later steps use exact names. Keep the order the user asked for. Return no steps " +
+  "when nothing needs doing.";
 
 const EXECUTOR_PROMPT =
-  "You are OpsPilot's executor. Complete only the current step, using the tools when they help.";
+  "You are OpsPilot's executor. Complete only the current step, calling the tools it needs. Never " +
+  "do work that belongs to a later step: a step about one incident opens or resolves only that " +
+  "incident. Use the results of the completed steps for any names or identifiers. When the step " +
+  "needs no tool, reply with its result in one or two sentences.";
 
 const REPLANNER_PROMPT =
-  "You are OpsPilot's replanner. Given the completed steps, return the steps that still need doing. " +
-  "When the request is done, return no steps and the final answer for the user.";
+  "You are OpsPilot's replanner. Review the completed steps against the request. Choose continue " +
+  "when the remaining plan still fits, adjust with the new remaining steps when it does not, and " +
+  "drop any step the completed results already cover. When a step failed and its result shows how " +
+  "to fix it, such as a list of known names, adjust with a corrected step instead of skipping it. " +
+  "Never swap a service the user named for a different one: when it does not exist, drop that " +
+  "step, keep the rest, and report it in the final answer. Choose finish only when no remaining " +
+  "step can still be done. The final answer states only what the completed results show; never " +
+  "say something was opened or resolved without a result that proves it.";
 
-function describeSteps(pastSteps: readonly StepResult[]): string {
-  if (pastSteps.length === 0) return "(none)";
-  return pastSteps.map(({ step, result }, index) => `${index + 1}. ${step}\n   Result: ${result}`).join("\n");
+const RESPONDER_PROMPT =
+  "You are OpsPilot. Write the final answer to the request from the completed steps, briefly. " +
+  "State only what the results show; never say something was opened or resolved without a " +
+  "result that proves it.";
+
+export interface PlanExecuteOptions {
+  /** When false, the executor runs the first plan as is and a responder writes the answer. */
+  replanner?: boolean;
 }
 
-function executorRequest(state: PlanState, step: string): string {
-  return `Request: ${state.input}\n\nCompleted steps:\n${describeSteps(state.pastSteps)}\n\nCurrent step: ${step}`;
+/** Where the graph goes after the executor, given the state left by the step. */
+export function afterExecutor(
+  state: { plan: readonly string[]; done: readonly unknown[] },
+  { replanner, stepCap }: { replanner: boolean; stepCap: number },
+): "replanner" | "executor" | "responder" | typeof END {
+  if (replanner) return "replanner";
+  if (state.plan.length === 0) return "responder";
+  return state.done.length >= stepCap ? END : "executor";
 }
 
-function replannerRequest(state: PlanState): string {
-  const remaining = state.plan.length > 0 ? state.plan.map((step) => `- ${step}`).join("\n") : "(none)";
-  return (
-    `Request: ${state.input}\n\nCompleted steps:\n${describeSteps(state.pastSteps)}\n\n` +
-    `Remaining plan:\n${remaining}`
-  );
+function describeDone(done: readonly Done[]): string {
+  if (done.length === 0) return "(none)";
+  return done.map(([step, result], index) => `${index + 1}. ${step}\n   Result: ${result}`).join("\n");
 }
 
-/** Turns a planner or replanner decision into a state update. `current` is null for the first plan. */
-export function applyDecision(
-  decision: Decision,
-  current: readonly string[] | null,
-  stepsDone: number,
-  stepCap: number,
-): Partial<PlanState> {
-  const changed = current === null || JSON.stringify(current) !== JSON.stringify(decision.steps);
-  const planEvents: TraceEvent[] = changed ? [{ type: "plan", steps: decision.steps }] : [];
-  if (decision.steps.length === 0) {
+function describePlan(plan: readonly string[]): string {
+  return plan.length > 0 ? plan.map((step) => `- ${step}`).join("\n") : "(none)";
+}
+
+/** Drops blank steps, which weaker models sometimes emit. */
+export function cleanSteps(steps: readonly string[]): string[] {
+  return steps.map((step) => step.trim()).filter((step) => /\w/.test(step));
+}
+
+/** Turns a replanner decision into a state update. `remaining` is the plan left after the last step. */
+export function applyReplan(decision: Replan, remaining: readonly string[]): Partial<PEState> {
+  const plan = decision.action === "adjust" ? cleanSteps(decision.steps ?? []) : [...remaining];
+  if (decision.action === "finish" || plan.length === 0) {
     const answer = decision.answer ?? "";
-    return { plan: [], answer, trace: [...planEvents, { type: "answer", content: answer }] };
+    return { plan: [], answer, trace: [{ type: "answer", content: answer }] };
   }
-  return { plan: decision.steps, limitReached: stepsDone >= stepCap, trace: planEvents };
+  const changed = JSON.stringify(plan) !== JSON.stringify(remaining);
+  return { plan, trace: changed ? [{ type: "plan", steps: plan }] : [] };
 }
 
-export function createPlanExecuteStrategy({ model, tools }: StrategyDependencies): ReasoningStrategy {
+export function createPlanExecuteStrategy(
+  { model, tools }: StrategyDependencies,
+  { replanner: useReplanner = true }: PlanExecuteOptions = {},
+): ReasoningStrategy {
   if (!model.bindTools) throw new Error("The model must support tool calling");
-  const planner = model.withStructuredOutput(Decision, { name: PLAN_TOOL_NAME, method: "functionCalling" });
+  // Function calling works on every OpenRouter model with tools, unlike JSON schema mode.
+  // includeRaw turns a missing or broken tool call into `parsed: null` instead of a throw,
+  // so provider failures still throw while bad output can be retried.
+  const planner = model.withStructuredOutput(planSchema, {
+    name: PLAN_TOOL_NAME,
+    method: "functionCalling",
+    includeRaw: true,
+  });
+  const replanner = model.withStructuredOutput(replanSchema, {
+    name: REPLAN_TOOL_NAME,
+    method: "functionCalling",
+    includeRaw: true,
+  });
   const executor = model.bindTools(tools);
   const toolsByName = new Map<string, StructuredToolInterface>(tools.map((tool) => [tool.name, tool]));
+  const plannerPrompt = PLANNER_PROMPT.replace(
+    "{tools}",
+    tools.map((tool) => `- ${tool.name}: ${tool.description}`).join("\n"),
+  );
 
   async function runToolCall(call: ToolCall, config: RunnableConfig): Promise<string> {
     const tool = toolsByName.get(call.name);
@@ -95,20 +144,20 @@ export function createPlanExecuteStrategy({ model, tools }: StrategyDependencies
   }
 
   function buildGraph(stepCap: number) {
-    return new StateGraph(PlanState)
+    return new StateGraph(PEState)
       .addNode("planner", async (state, config) => {
-        const decision = await planner.invoke(
-          [new SystemMessage(PLANNER_PROMPT), new HumanMessage(state.input)],
-          config,
+        const decision = await structured("planner", planSchema, () =>
+          planner.invoke([new SystemMessage(plannerPrompt), new HumanMessage(state.input)], config),
         );
-        return applyDecision(decision, null, 0, stepCap);
+        const steps = cleanSteps(decision.steps);
+        return { plan: steps, trace: [{ type: "plan", steps }] };
       })
       .addNode("executor", async (state, config) => {
         const [step = "", ...rest] = state.plan;
-        const response = await executor.invoke(
-          [new SystemMessage(EXECUTOR_PROMPT), new HumanMessage(executorRequest(state, step))],
-          config,
-        );
+        const request =
+          `Request: ${state.input}\n\nCompleted steps:\n${describeDone(state.done)}\n\n` +
+          `Current step: ${step}\n\nLater steps, not yours:\n${describePlan(rest)}`;
+        const response = await executor.invoke([new SystemMessage(EXECUTOR_PROMPT), new HumanMessage(request)], config);
         const trace: TraceEvent[] = [];
         const observations: string[] = [];
         for (const call of response.tool_calls ?? []) {
@@ -118,45 +167,63 @@ export function createPlanExecuteStrategy({ model, tools }: StrategyDependencies
           observations.push(content);
         }
         if (observations.length === 0 && response.text) trace.push({ type: "thought", content: response.text });
-        const result = observations.join("\n") || response.text;
-        return { plan: rest, pastSteps: [...state.pastSteps, { step, result }], trace };
+        const done: Done = [step, observations.join("\n") || response.text];
+        return { plan: rest, done: [done], trace };
       })
       .addNode("replanner", async (state, config) => {
-        const decision = await planner.invoke(
-          [new SystemMessage(REPLANNER_PROMPT), new HumanMessage(replannerRequest(state))],
-          config,
+        const request =
+          `Request: ${state.input}\n\nCompleted steps:\n${describeDone(state.done)}\n\n` +
+          `Remaining plan:\n${describePlan(state.plan)}`;
+        const decision = await structured("replanner", replanSchema, () =>
+          replanner.invoke([new SystemMessage(REPLANNER_PROMPT), new HumanMessage(request)], config),
         );
-        return applyDecision(decision, state.plan, state.pastSteps.length, stepCap);
+        return applyReplan(decision, state.plan);
+      })
+      .addNode("responder", async (state, config) => {
+        const request = `Request: ${state.input}\n\nCompleted steps:\n${describeDone(state.done)}`;
+        const response = await model.invoke([new SystemMessage(RESPONDER_PROMPT), new HumanMessage(request)], config);
+        return { answer: response.text, trace: [{ type: "answer", content: response.text }] };
       })
       .addEdge(START, "planner")
-      .addConditionalEdges("planner", (state) => (state.answer === null ? "executor" : END), ["executor", END])
-      .addEdge("executor", "replanner")
+      // An empty first plan goes straight to whichever node writes the answer.
+      .addConditionalEdges(
+        "planner",
+        (state) => (state.plan.length > 0 ? "executor" : useReplanner ? "replanner" : "responder"),
+        ["executor", "replanner", "responder"],
+      )
+      .addConditionalEdges("executor", (state) => afterExecutor(state, { replanner: useReplanner, stepCap }), [
+        "replanner",
+        "executor",
+        "responder",
+        END,
+      ])
+      .addEdge("responder", END)
       .addConditionalEdges(
         "replanner",
-        (state) => (state.answer !== null || state.limitReached ? END : "executor"),
+        (state) => (state.answer !== undefined || state.done.length >= stepCap ? END : "executor"),
         ["executor", END],
       )
       .compile();
   }
 
   return {
-    name: "plan-execute",
+    name: useReplanner ? "plan-execute" : "plan-execute:no-replanner",
     async run(input, { maxIterations }): Promise<RunResult> {
       const started = Date.now();
       const counter = new LlmCallCounter();
       const stepCap = Math.min(maxIterations, MAX_STEPS);
       const graph = buildGraph(stepCap);
 
-      let state: PlanState | undefined;
+      let state: PEState | undefined;
       const outcome = await (async () => {
         try {
           const stream = await graph.stream(
-            { input, plan: [], pastSteps: [], answer: null, limitReached: false },
-            // Safety net only; the explicit step counter above is the real limit.
+            { input, plan: [] },
+            // Safety net only; the step cap on `done` is the real limit.
             { streamMode: "values", callbacks: [counter], recursionLimit: stepCap * 2 + 10 },
           );
           for await (const values of stream) state = values;
-          return state?.limitReached
+          return state?.answer === undefined
             ? ({ stopReason: "iteration_limit" } as const)
             : ({ stopReason: "completed" } as const);
         } catch (error) {

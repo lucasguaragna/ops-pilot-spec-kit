@@ -2,8 +2,13 @@
 export class DomainError extends Error {}
 
 export class ServiceNotFoundError extends DomainError {
-  constructor(readonly service: string) {
-    super(`Service not found: ${service}`);
+  /** Lists the known services so the model can retry with an exact name. */
+  constructor(
+    readonly service: string,
+    readonly knownServices: readonly string[] = [],
+  ) {
+    const known = knownServices.length > 0 ? `. Known services: ${knownServices.join(", ")}` : "";
+    super(`Service not found: ${service}${known}`);
     this.name = "ServiceNotFoundError";
   }
 }
@@ -27,5 +32,16 @@ export class ConfigurationError extends Error {
   constructor(readonly settings: readonly string[]) {
     super(`Missing or invalid setting: ${settings.join(", ")}`);
     this.name = "ConfigurationError";
+  }
+}
+
+/** The JSON database file cannot be parsed or does not match the store shape. */
+export class StoreFileError extends Error {
+  constructor(
+    readonly path: string,
+    reason: string,
+  ) {
+    super(`Invalid store file ${path}: ${reason}`);
+    this.name = "StoreFileError";
   }
 }

@@ -3,9 +3,12 @@ import type { Metrics, RunResult, TraceEvent } from "../domain/types.ts";
 export function formatEvent(event: TraceEvent): string {
   switch (event.type) {
     case "thought":
-    case "critique":
     case "answer":
       return `[${event.type}] ${event.content}`;
+    case "critique": {
+      const verdict = event.approved ? "approved" : `rejected (${event.fix ?? "rerun"})`;
+      return event.content ? `[critique] ${verdict}: ${event.content}` : `[critique] ${verdict}`;
+    }
     case "action":
       return `[action] ${event.tool} ${JSON.stringify(event.args)}`;
     case "observation":

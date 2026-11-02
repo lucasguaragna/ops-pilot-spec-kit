@@ -20,5 +20,8 @@ export function createModel(env: Record<string, string | undefined> = process.en
     apiKey: settings.data.OPENROUTER_API_KEY,
     configuration: { baseURL: OPENROUTER_BASE_URL },
     temperature: 0,
+    // Route only to models that honor every request parameter, such as a forced tool call.
+    // Without it, routers like openrouter/free may pick a model that answers in plain text.
+    modelKwargs: { provider: { require_parameters: true } },
   });
 }

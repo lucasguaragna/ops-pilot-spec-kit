@@ -131,7 +131,8 @@ errors can be checked without a provider.
 - **FR-005**: The system MUST provide three tools: list alerts by status, open an incident from a
   title, service, and severity, and resolve an incident by identifier.
 - **FR-006**: Every tool input MUST be validated against a declared schema.
-- **FR-007**: Tools MUST operate on an in-memory store that needs no external service.
+- **FR-007**: Tools MUST operate on a local store that needs no external service: a JSON file for
+  runs, and memory for tests.
 - **FR-008**: The seed MUST contain 5 services and 6 alerts, with 3 firing and 3 resolved, and MUST
   be runnable through a dedicated command.
 - **FR-009**: The ReAct strategy MUST use LangChain's prebuilt `createAgent` with these tools and
@@ -179,8 +180,9 @@ errors can be checked without a provider.
   provider cannot be verified end to end.
 - MySQL through Sequelize is deferred to a later feature, as chosen by the user. This feature adds
   no database connection.
-- The seed resets data to a known state each time it runs. Data lives only for one process, so the
-  seed command loads it and prints a summary, and each arena run starts from the seed.
+- The seed resets data to a known state each time it runs. Until MySQL arrives, data lives in a
+  local JSON file that the seed command writes and the arena reads and changes. Tests keep data in
+  memory.
 - Service names and alert content are fictional sample data.
 - Severity values are low, medium, high, and critical.
 - The default iteration limit is 10 when `--max-iterations` is not given, and the arena runs all

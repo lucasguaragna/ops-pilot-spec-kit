@@ -49,16 +49,20 @@ needs a live provider is marked as unverified.
 
 ## Planner structured output
 
-- **Decision**: `withStructuredOutput(schema, { method: "functionCalling" })`, validating with zod.
-- **Rationale**: Tool calling is the option most OpenRouter models support.
+- **Decision**: `withStructuredOutput(schema, { method: "functionCalling", includeRaw: true })`,
+  validating `parsed` with zod and retrying once when it is missing or invalid.
+- **Rationale**: Tool calling is the option most OpenRouter models support. With `includeRaw`, a
+  reply without the tool call gives `parsed: null` instead of throwing, so it can be told apart from
+  a provider failure.
 - **Alternatives considered**: JSON schema mode, whose support varies per model.
-- **Unverified**: Depends on the model chosen for `OPENROUTER_MODEL`.
+- **Verified**: 2026-11-02 with `OPENROUTER_MODEL=openrouter/free`, which routes each call to a
+  different free model. Before the retry, some calls returned no structured output.
 
 ## Plan-and-Execute executor
 
 - **Decision**: For each step, the executor makes one model turn with tools bound, runs its tool
-  calls, and records the action and observation. The replanner then returns the remaining steps and,
-  when none remain, the final answer.
+  calls, records the action and observation, and pushes `[step, result]` to `done`. The replanner
+  then chooses `continue`, `adjust`, or `finish`.
 - **Rationale**: This keeps one step per executor pass, so the 8-step cap is exact and LLM calls stay
   predictable.
 - **Alternatives considered**: A nested ReAct agent per step, which hides tool calls inside a step
@@ -71,6 +75,14 @@ needs a live provider is marked as unverified.
 - **Rationale**: This meets the pure function principle and keeps tests deterministic. Incident
   identifiers are sequential (`INC-001`) so runs can be compared.
 - **Alternatives considered**: A mutable class, which is simpler but breaks the constitution.
+
+## JSON database
+
+- **Decision**: The holder takes a backend. Tests use memory; the seed command and the arena use
+  `data/db.json`, read on every call and written through a temporary file and rename.
+- **Rationale**: The user wants data to persist between runs until MySQL arrives, while tests stay
+  deterministic. Reading on every call shows manual edits to the file.
+- **Alternatives considered**: Loading once per process, which hides manual edits.
 
 ## Loading environment variables
 

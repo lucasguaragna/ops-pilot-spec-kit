@@ -6,8 +6,10 @@ export const seedServices: readonly Service[] = [
   { name: "auth-service" },
   { name: "search-api" },
   { name: "notification-service" },
+  { name: "catalog-api" },
 ];
 
+// The oldest firing alert is ALT-003, not the lowest id, so "the oldest" needs firedAt.
 export const seedAlerts: readonly Alert[] = [
   {
     id: "ALT-001",
@@ -15,6 +17,7 @@ export const seedAlerts: readonly Alert[] = [
     service: "checkout-api",
     severity: "high",
     status: "firing",
+    firedAt: "2026-11-02T08:40:00Z",
   },
   {
     id: "ALT-002",
@@ -22,6 +25,7 @@ export const seedAlerts: readonly Alert[] = [
     service: "payments-worker",
     severity: "critical",
     status: "firing",
+    firedAt: "2026-11-02T09:15:00Z",
   },
   {
     id: "ALT-003",
@@ -29,6 +33,7 @@ export const seedAlerts: readonly Alert[] = [
     service: "auth-service",
     severity: "medium",
     status: "firing",
+    firedAt: "2026-11-02T06:05:00Z",
   },
   {
     id: "ALT-004",
@@ -36,6 +41,7 @@ export const seedAlerts: readonly Alert[] = [
     service: "search-api",
     severity: "low",
     status: "resolved",
+    firedAt: "2026-11-01T22:30:00Z",
   },
   {
     id: "ALT-005",
@@ -43,6 +49,7 @@ export const seedAlerts: readonly Alert[] = [
     service: "notification-service",
     severity: "medium",
     status: "resolved",
+    firedAt: "2026-11-01T18:10:00Z",
   },
   {
     id: "ALT-006",
@@ -50,5 +57,14 @@ export const seedAlerts: readonly Alert[] = [
     service: "checkout-api",
     severity: "critical",
     status: "resolved",
+    firedAt: "2026-11-01T14:00:00Z",
+  },
+  {
+    id: "ALT-007",
+    title: "Product page error rate above 3%",
+    service: "catalog-api",
+    severity: "high",
+    status: "firing",
+    firedAt: "2026-11-02T09:50:00Z",
   },
 ];

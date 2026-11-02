@@ -18,7 +18,19 @@ describe("formatEvent", () => {
       formatEvent({ type: "plan", steps: ["List alerts", "Open incident"] }),
       "[plan]\n  1. List alerts\n  2. Open incident",
     );
-    assert.equal(formatEvent({ type: "critique", content: "Too slow" }), "[critique] Too slow");
+    assert.equal(
+      formatEvent({ type: "critique", approved: true, content: "Backed by the trace" }),
+      "[critique] approved: Backed by the trace",
+    );
+    assert.equal(
+      formatEvent({ type: "critique", approved: false, fix: "rerun", content: "No incident opened" }),
+      "[critique] rejected (rerun): No incident opened",
+    );
+    assert.equal(
+      formatEvent({ type: "critique", approved: false, fix: "rewrite", content: "Wrong id" }),
+      "[critique] rejected (rewrite): Wrong id",
+    );
+    assert.equal(formatEvent({ type: "critique", approved: true, content: "" }), "[critique] approved");
     assert.equal(formatEvent({ type: "answer", content: "Done" }), "[answer] Done");
   });
 });

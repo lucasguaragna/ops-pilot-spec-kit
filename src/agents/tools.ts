@@ -26,7 +26,9 @@ export function createTools(store: Store) {
     name: "open_incident",
     description:
       "Open an incident for a service when an alert needs follow-up. Returns the incident and its " +
-      "id. severity: low | medium | high | critical.",
+      "id. All three fields are required. title: a short summary of the problem. " +
+      "service: the exact service name, as list_alerts shows it (for example checkout-api). " +
+      "severity: low | medium | high | critical; sev1 is critical, sev2 high, sev3 medium, sev4 low.",
     schema: OpenIncidentInput,
   });
 

@@ -6,7 +6,8 @@ Validation guide. Contracts are in [contracts/](contracts/).
 
 Prerequisite: `npm ci`.
 
-1. `npm run seed` prints 5 services, 3 firing alerts, and 3 resolved alerts.
+1. `npm run seed` writes `data/db.json` and prints 5 services, 3 firing alerts, 3 resolved alerts,
+   and 0 incidents.
 2. `npm test` passes with network access disabled, and `npm run typecheck` passes.
 3. `npm run arena -- --strategies unknown` exits with code `2` before any strategy runs.
 4. `npm run arena -- --max-iterations 0` exits with code `2`.
@@ -23,5 +24,5 @@ Prerequisite: `.env` created from `.env.example`, with `OPENROUTER_API_KEY` and 
    the most severe one"` prints a plan, then each step, then an answer.
 3. `npm run arena` runs both strategies on the same input.
 4. `npm run arena -- --max-iterations 1` shows stop reason `iteration_limit` on a multi-step request.
-5. Confirm `withStructuredOutput` works with the chosen model. This is unverified in
-   [research.md](research.md).
+5. Run `npm run seed` first when a run should start from the seed; runs keep their incidents in
+   `data/db.json`.

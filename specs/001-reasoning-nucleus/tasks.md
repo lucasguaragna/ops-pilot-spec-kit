@@ -140,6 +140,23 @@ settings names the missing setting and exits with code `1`
 
 ---
 
+## Phase 8: JSON database and Plan-and-Execute on OpenRouter
+
+**Purpose**: Follow docs/plan-and-execute-arquivos-exemplo.txt, and keep data in a JSON file between
+runs while tests stay in memory
+
+- [X] T031 [P] Add `StoreFileError` in src/domain/errors.ts
+- [X] T032 Add a `StoreBackend` (`load`, `save`) to src/store/in-memory-store.ts; `createStore(backend)` defaults to `createMemoryBackend()`, so tests stay in memory
+- [X] T033 Write src/store/json-file-store.test.ts: file created from the seed when missing, incidents kept across store instances, `reset` writes the seed, invalid JSON or shape throws `StoreFileError`, and serialize/parse round trip
+- [X] T034 Implement src/store/json-file-store.ts: `data/db.json`, zod validation on every load, writes through a temporary file and rename; ignore `data/` in .gitignore
+- [X] T035 Make src/store/seed.ts write the seed to `data/db.json`, and make src/arena.ts use the JSON backend
+- [X] T036 Rewrite src/agents/plan-and-execute.test.ts: `applyReplan` for `continue`, `adjust`, and `finish`, `cleanSteps`, an empty first plan, one retry when structured output is missing, and a clear error after the second miss
+- [X] T037 Rewrite src/agents/plan-and-execute.ts after the example: `PEState` with `plan`, `done` as `[step, result]` pairs with a concat reducer, and `answer`; the planner returns `{ steps }` and sees the tool list; the executor runs one step with the tools and pushes it to `done`; the replanner chooses `continue`, `adjust`, or `finish`; the run stops after `min(maxIterations, 8)` steps
+- [X] T038 Run `npm run seed`, `npm run typecheck`, and `npm test`
+- [X] T039 Run `npm run arena -- --strategies plan-execute` against OpenRouter
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies

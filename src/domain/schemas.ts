@@ -20,6 +20,8 @@ export const Alert = z.object({
   service: z.string().min(1),
   severity: Severity,
   status: AlertStatus,
+  /** When the alert started firing, as an ISO 8601 UTC timestamp. */
+  firedAt: z.iso.datetime(),
 });
 export type Alert = z.infer<typeof Alert>;
 

@@ -28,7 +28,10 @@ export function listAlerts(state: StoreState, status: AlertFilter): Alert[] {
 
 export function openIncident(state: StoreState, input: OpenIncidentInput): Transition {
   if (!state.services.some((service) => service.name === input.service)) {
-    throw new ServiceNotFoundError(input.service);
+    throw new ServiceNotFoundError(
+      input.service,
+      state.services.map((service) => service.name),
+    );
   }
   const incident: Incident = {
     id: `INC-${String(state.nextIncidentNumber).padStart(3, "0")}`,
@@ -61,6 +64,22 @@ export function resolveIncident(state: StoreState, id: string): Transition {
   };
 }
 
+/** Where the store keeps its state between calls. */
+export interface StoreBackend {
+  load(): StoreState;
+  save(state: StoreState): void;
+}
+
+export function createMemoryBackend(initial: StoreState = createInitialState()): StoreBackend {
+  let state = initial;
+  return {
+    load: () => state,
+    save: (next) => {
+      state = next;
+    },
+  };
+}
+
 /** Thin stateful holder over the pure transitions above, used by the tools. */
 export interface Store {
   getState(): StoreState;
@@ -70,19 +89,16 @@ export interface Store {
   reset(): void;
 }
 
-export function createStore(): Store {
-  let state = createInitialState();
+export function createStore(backend: StoreBackend = createMemoryBackend()): Store {
   const apply = (transition: Transition): Incident => {
-    state = transition.state;
+    backend.save(transition.state);
     return transition.incident;
   };
   return {
-    getState: () => state,
-    listAlerts: (status) => listAlerts(state, status),
-    openIncident: (input) => apply(openIncident(state, input)),
-    resolveIncident: (id) => apply(resolveIncident(state, id)),
-    reset: () => {
-      state = createInitialState();
-    },
+    getState: () => backend.load(),
+    listAlerts: (status) => listAlerts(backend.load(), status),
+    openIncident: (input) => apply(openIncident(backend.load(), input)),
+    resolveIncident: (id) => apply(resolveIncident(backend.load(), id)),
+    reset: () => backend.save(createInitialState()),
   };
 }

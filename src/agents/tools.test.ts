@@ -21,7 +21,7 @@ describe("tools", () => {
   it("list_alerts returns JSON text and defaults to firing", async () => {
     const { listAlerts } = setup();
     const alerts = JSON.parse(await listAlerts.invoke({}));
-    assert.equal(alerts.length, 3);
+    assert.equal(alerts.length, 4);
     assert.ok(alerts.every((alert: { status: string }) => alert.status === "firing"));
   });
 
@@ -48,6 +48,7 @@ describe("tools", () => {
     const { openIncident, resolveIncident } = setup();
     const unknownService = await openIncident.invoke({ title: "x", service: "nope", severity: "low" });
     assert.match(unknownService, /^Error: Service not found: nope/);
+    assert.match(unknownService, /Known services: checkout-api, payments-worker, auth-service/);
     assert.match(await resolveIncident.invoke({ id: "INC-999" }), /^Error: Incident not found/);
   });
 });

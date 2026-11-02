@@ -13,7 +13,8 @@ text with `Error:` first, so the model can react and the run continues. Field ru
 
 - **Input**: `{ title: string, service: string, severity: Severity }`
 - **Output**: The created incident, with status `open`
-- **Errors**: `ServiceNotFoundError`
+- **Errors**: `ServiceNotFoundError`, whose message lists the known services
+- **Severity aliases** (in the description): sev1 `critical`, sev2 `high`, sev3 `medium`, sev4 `low`
 
 ## resolve_incident
 

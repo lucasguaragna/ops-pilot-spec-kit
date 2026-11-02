@@ -22,6 +22,7 @@
 | `service` | string | Must match a Service |
 | `severity` | Severity | |
 | `status` | AlertStatus | |
+| `firedAt` | string | ISO 8601 UTC timestamp of when the alert started firing |
 
 Alerts are read-only in this feature.
 
@@ -42,6 +43,10 @@ State transition: `open` to `resolved`. A resolved incident cannot change again.
 Immutable. Holds `services`, `alerts`, `incidents`, and `nextIncidentNumber`. Transitions return a
 new state and never change the previous one. Identifiers restart with the seed, which keeps runs
 comparable.
+
+A `StoreBackend` loads and saves the state. Tests use a memory backend. The seed command and the
+arena use `data/db.json`, which is validated with zod on every load, created from the seed when
+missing, and ignored by Git.
 
 ## Seed
 

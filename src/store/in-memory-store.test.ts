@@ -16,10 +16,10 @@ import {
 const incidentInput = { title: "Checkout latency", service: "checkout-api", severity: "high" } as const;
 
 describe("seed", () => {
-  it("has 5 unique services, 3 firing and 3 resolved alerts, and no incidents", () => {
+  it("has 6 unique services, 4 firing and 3 resolved alerts, and no incidents", () => {
     const state = createInitialState();
-    assert.equal(new Set(state.services.map((service) => service.name)).size, 5);
-    assert.equal(listAlerts(state, "firing").length, 3);
+    assert.equal(new Set(state.services.map((service) => service.name)).size, 6);
+    assert.equal(listAlerts(state, "firing").length, 4);
     assert.equal(listAlerts(state, "resolved").length, 3);
     assert.equal(state.incidents.length, 0);
   });
@@ -35,7 +35,7 @@ describe("listAlerts", () => {
   it("filters by status, and 'all' returns every alert", () => {
     const state = createInitialState();
     assert.ok(listAlerts(state, "firing").every((alert) => alert.status === "firing"));
-    assert.equal(listAlerts(state, "all").length, 6);
+    assert.equal(listAlerts(state, "all").length, 7);
   });
 });
 

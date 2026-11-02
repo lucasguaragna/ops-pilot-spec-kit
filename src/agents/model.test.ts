@@ -30,5 +30,6 @@ describe("createModel", () => {
     const model = createModel({ OPENROUTER_API_KEY: secret, OPENROUTER_MODEL: "openai/gpt-4o-mini" });
     assert.equal(model.model, "openai/gpt-4o-mini");
     assert.equal(model.temperature, 0);
+    assert.deepEqual(model.modelKwargs, { provider: { require_parameters: true } });
   });
 });

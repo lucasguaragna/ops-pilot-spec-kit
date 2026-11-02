@@ -3,7 +3,7 @@ export type TraceEvent =
   | { type: "action"; tool: string; args: Record<string, unknown> }
   | { type: "observation"; tool: string; content: string }
   | { type: "plan"; steps: string[] }
-  | { type: "critique"; content: string }
+  | { type: "critique"; approved: boolean; fix?: "rerun" | "rewrite"; content: string }
   | { type: "answer"; content: string };
 
 export interface Metrics {
