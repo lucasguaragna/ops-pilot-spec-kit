@@ -1,0 +1,174 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2026-11-02T17:30:00.000Z",
+  "__export_source": "ops-pilot:docs",
+  "resources": [
+    {
+      "_id": "wrk_opspilot",
+      "_type": "workspace",
+      "parentId": null,
+      "name": "OpsPilot",
+      "description": "Requests for the OpsPilot API. Start the server with `npm run dev` first. Full API description: docs/openapi.yaml.",
+      "scope": "collection"
+    },
+    {
+      "_id": "env_opspilot_base",
+      "_type": "environment",
+      "parentId": "wrk_opspilot",
+      "name": "Base Environment",
+      "data": { "base_url": "http://127.0.0.1:3000" },
+      "dataPropertyOrder": { "&": ["base_url"] },
+      "isPrivate": false,
+      "metaSortKey": 1
+    },
+    {
+      "_id": "fld_opspilot_success",
+      "_type": "request_group",
+      "parentId": "wrk_opspilot",
+      "name": "Success (200)",
+      "description": "Requests that run the agent. Each one calls the model, so it needs OPENROUTER_API_KEY and can take from a few seconds to over a minute.",
+      "metaSortKey": 1
+    },
+    {
+      "_id": "fld_opspilot_errors",
+      "_type": "request_group",
+      "parentId": "wrk_opspilot",
+      "name": "Errors (4xx)",
+      "description": "Requests that the server rejects before running the agent. They are fast and do not call the model.",
+      "metaSortKey": 2
+    },
+    {
+      "_id": "req_list_alerts",
+      "_type": "request",
+      "parentId": "fld_opspilot_success",
+      "name": "List firing alerts (react)",
+      "description": "Read-only question with the default strategy and no critic. Expect 200, stopReason completed, and a trace with list_alerts.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/chat",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"message\": \"Which alerts are firing?\",\n  \"reflect\": false\n}"
+      },
+      "headers": [{ "name": "Content-Type", "value": "application/json" }],
+      "metaSortKey": 1
+    },
+    {
+      "_id": "req_open_incident_reflect",
+      "_type": "request",
+      "parentId": "fld_opspilot_success",
+      "name": "Open sev2 incident (react + reflection)",
+      "description": "WRITES DATA: the agent opens a real incident in data/db.json. Run `npm run seed` to reset. With reflect true the critic checks the answer, so the trace can contain critique events and the call takes longer.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/chat",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"message\": \"Open a sev2 incident for the catalog service\",\n  \"strategy\": \"react\",\n  \"reflect\": true\n}"
+      },
+      "headers": [{ "name": "Content-Type", "value": "application/json" }],
+      "metaSortKey": 2
+    },
+    {
+      "_id": "req_multi_step_plan",
+      "_type": "request",
+      "parentId": "fld_opspilot_success",
+      "name": "Multi-step task (plan-execute + reflection)",
+      "description": "WRITES DATA: opens an incident for the oldest firing alert, then counts what is left. The trace starts with a plan event.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/chat",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"message\": \"Open an incident for the oldest firing alert and tell me how many alerts are still firing\",\n  \"strategy\": \"plan-execute\",\n  \"reflect\": true\n}"
+      },
+      "headers": [{ "name": "Content-Type", "value": "application/json" }],
+      "metaSortKey": 3
+    },
+    {
+      "_id": "req_bad_missing_reflect",
+      "_type": "request",
+      "parentId": "fld_opspilot_errors",
+      "name": "400 - missing reflect",
+      "description": "reflect is required. Expect 400 invalid_body with an issue on the path [\"reflect\"].",
+      "method": "POST",
+      "url": "{{ _.base_url }}/chat",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"message\": \"hi\"\n}"
+      },
+      "headers": [{ "name": "Content-Type", "value": "application/json" }],
+      "metaSortKey": 1
+    },
+    {
+      "_id": "req_bad_blank_message",
+      "_type": "request",
+      "parentId": "fld_opspilot_errors",
+      "name": "400 - blank message",
+      "description": "message must have at least one character after trimming. Expect 400 invalid_body with an issue on [\"message\"].",
+      "method": "POST",
+      "url": "{{ _.base_url }}/chat",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"message\": \"   \",\n  \"reflect\": false\n}"
+      },
+      "headers": [{ "name": "Content-Type", "value": "application/json" }],
+      "metaSortKey": 2
+    },
+    {
+      "_id": "req_bad_not_json",
+      "_type": "request",
+      "parentId": "fld_opspilot_errors",
+      "name": "400 - body is not JSON",
+      "description": "The header says JSON but the body is not. Expect 400 invalid_body with one issue whose path is empty.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/chat",
+      "body": {
+        "mimeType": "application/json",
+        "text": "not json"
+      },
+      "headers": [{ "name": "Content-Type", "value": "application/json" }],
+      "metaSortKey": 3
+    },
+    {
+      "_id": "req_bad_content_type",
+      "_type": "request",
+      "parentId": "fld_opspilot_errors",
+      "name": "400 - missing JSON content-type",
+      "description": "Valid JSON text, but sent as text/plain, so the server never reads it. Expect 400 invalid_body. This is the usual cause of a 400 when calling with curl and no -H header.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/chat",
+      "body": {
+        "mimeType": "text/plain",
+        "text": "{\"message\":\"hi\",\"reflect\":false}"
+      },
+      "headers": [{ "name": "Content-Type", "value": "text/plain" }],
+      "metaSortKey": 4
+    },
+    {
+      "_id": "req_unknown_strategy",
+      "_type": "request",
+      "parentId": "fld_opspilot_errors",
+      "name": "422 - unknown strategy",
+      "description": "Strategy names are case sensitive, so React is unknown. Expect 422 unknown_strategy with knownStrategies listing the valid names.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/chat",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"message\": \"hi\",\n  \"strategy\": \"React\",\n  \"reflect\": false\n}"
+      },
+      "headers": [{ "name": "Content-Type", "value": "application/json" }],
+      "metaSortKey": 5
+    },
+    {
+      "_id": "req_not_found",
+      "_type": "request",
+      "parentId": "fld_opspilot_errors",
+      "name": "404 - other path",
+      "description": "Only POST /chat exists. Any other path or method gets Express's default 404 page, not a JSON body.",
+      "method": "GET",
+      "url": "{{ _.base_url }}/other",
+      "body": {},
+      "headers": [],
+      "metaSortKey": 6
+    }
+  ]
+}

@@ -1,0 +1,525 @@
+openapi: 3.1.0
+
+info:
+  title: OpsPilot API
+  version: 0.1.0
+  description: |
+    OpsPilot is an on-call copilot. It answers questions about production alerts and can open or
+    resolve incidents, by running an LLM agent that calls tools.
+
+    ## What the API does
+
+    The API has a single endpoint, `POST /chat`. The caller sends one message in natural language,
+    for example "Which alerts are firing?" or "Open a sev2 incident for the catalog service". The
+    server picks a reasoning strategy, runs the agent, and replies with the final answer plus a
+    **trace** of every step the agent took. The call is synchronous: the reply comes when the run
+    ends, which can take from a few seconds to more than a minute with free models.
+
+    ## What the agent can do
+
+    The agent has three tools. They are the only way it reads or changes data:
+
+    | Tool | Effect |
+    | --- | --- |
+    | `list_alerts` | Reads alerts, filtered by status (`firing`, `resolved`, or `all`). Read-only. |
+    | `open_incident` | **Writes**: creates an incident for a service (`title`, `service`, `severity`). |
+    | `resolve_incident` | **Writes**: marks an open incident as resolved, by id such as `INC-001`. |
+
+    Because two tools write data, a request like "open an incident" really creates one. Data lives in
+    `data/db.json`; `npm run seed` resets it.
+
+    ## Reasoning strategies
+
+    - `react`: the agent alternates between thinking, calling a tool, and reading the result until it
+      can answer. Fast and good for most questions. This is the default.
+    - `plan-execute`: the agent writes a plan first, runs each step, and replans if needed. Better for
+      requests with several ordered steps.
+
+    ## Reflection
+
+    With `reflect: true`, a second model call (the critic) checks the answer against what the tools
+    actually returned. If the answer claims something the tool results do not support, the critic
+    rejects it and the answer is regenerated. This costs extra model calls and time, and it fixes the
+    text only: it never undoes a change a tool already made.
+
+    ## Limits and safety
+
+    - **No authentication.** Anyone who can reach the port can read data and open or resolve
+      incidents. The server listens on `127.0.0.1` by default; the `HOST` environment variable changes
+      that. Do not expose it to a network you do not trust.
+    - **Timeout.** A run that exceeds 180 seconds is cancelled and the reply is `504`.
+    - **Error text is hidden.** On a failed run the reply names the error class only. The real error
+      message (which may come from the model provider) goes to the server log.
+    - Every reply body is validated against the schemas below before it is sent.
+
+    ## Trying it
+
+    ```sh
+    npm run dev
+    curl -s localhost:3000/chat -H 'content-type: application/json' \
+      -d '{"message":"Which alerts are firing?","reflect":false}'
+    ```
+
+    The `content-type: application/json` header is required. Without it the body is not read and the
+    reply is `400`.
+
+servers:
+  - url: http://127.0.0.1:3000
+    description: Local server (`npm run dev`). The port comes from `PORT`, the host from `HOST`.
+
+tags:
+  - name: Chat
+    description: Talk to the on-call agent.
+
+paths:
+  /chat:
+    post:
+      tags: [Chat]
+      operationId: postChat
+      summary: Ask the on-call agent something or give it a task
+      description: |
+        **Why this endpoint exists:** it is the single way to use OpsPilot over HTTP. Instead of one
+        endpoint per action (list alerts, open incident, resolve incident), the caller states what
+        they want in plain language and the agent chooses the tools.
+
+        **What happens on a call**
+
+        1. The body is validated (`400` if invalid).
+        2. The `strategy` name is looked up (`422` if unknown).
+        3. If `reflect` is `true`, the strategy is wrapped with the critic.
+        4. The agent runs for at most 180 seconds. If it is still running, it is cancelled and the
+           reply is `504`; no model or tool call starts after that.
+        5. The result is mapped to a status: `200` when the run finished, `502` when the run failed.
+
+        **Side effects:** the agent may open or resolve incidents. Calling this endpoint twice with the
+        same request can create two incidents; the endpoint is **not idempotent**.
+
+        **Reading the reply:** `answer` is the final text. `trace` shows how the agent got there (which
+        tools it called, with which arguments, what they returned, and what the critic said), so a
+        caller can audit any change that was made. `metrics` gives the cost of the run.
+      requestBody:
+        required: true
+        description: 'The message and how to process it. Send the header `content-type: application/json`.'
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+            examples:
+              listAlerts:
+                summary: A read-only question with the default strategy
+                value:
+                  message: Which alerts are firing?
+                  reflect: false
+              openIncidentWithReflection:
+                summary: A write request, checked by the critic
+                value:
+                  message: Open a sev2 incident for the catalog service
+                  strategy: react
+                  reflect: true
+              multiStep:
+                summary: Several ordered steps with the planner
+                value:
+                  message: Open an incident for the oldest firing alert and tell me how many alerts are still firing
+                  strategy: plan-execute
+                  reflect: true
+      responses:
+        '200':
+          description: |
+            The run finished. `stopReason` tells how:
+
+            - `completed`: the agent produced a final answer.
+            - `iteration_limit`: the agent used all its steps (10 by default) without answering.
+              `answer` is `null`; read `trace` to see what it did.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatReply'
+              examples:
+                completed:
+                  summary: Read-only question answered
+                  value:
+                    answer: 'Two alerts are firing: ALT-001 (checkout-api, high) and ALT-002 (payments-worker, critical).'
+                    stopReason: completed
+                    trace:
+                      - type: action
+                        tool: list_alerts
+                        args:
+                          status: firing
+                      - type: observation
+                        tool: list_alerts
+                        content: '[{"id":"ALT-001","title":"p99 latency above 2s","service":"checkout-api","severity":"high","status":"firing","firedAt":"2026-11-02T08:40:00Z"},{"id":"ALT-002","title":"Queue backlog above 10k messages","service":"payments-worker","severity":"critical","status":"firing","firedAt":"2026-11-02T09:15:00Z"}]'
+                      - type: answer
+                        content: 'Two alerts are firing: ALT-001 (checkout-api, high) and ALT-002 (payments-worker, critical).'
+                    metrics:
+                      llmCalls: 2
+                      latencyMs: 1840
+                reflected:
+                  summary: With reflection, the critic rejected the first answer
+                  value:
+                    answer: 'Incident INC-001 opened for catalog-api with severity high; the request asked for sev 2.'
+                    stopReason: completed
+                    trace:
+                      - type: action
+                        tool: open_incident
+                        args:
+                          severity: high
+                          title: Catalog service incident
+                          service: catalog-api
+                      - type: observation
+                        tool: open_incident
+                        content: '{"id":"INC-001","title":"Catalog service incident","service":"catalog-api","severity":"high","status":"open"}'
+                      - type: answer
+                        content: Incident opened for catalog-api (INC-001) with high severity.
+                      - type: critique
+                        approved: false
+                        fix: rewrite
+                        content: The request said sev 2 but the incident was opened as high, and the answer does not mention it.
+                      - type: answer
+                        content: 'Incident INC-001 opened for catalog-api with severity high; the request asked for sev 2.'
+                      - type: critique
+                        approved: true
+                        content: ''
+                    metrics:
+                      llmCalls: 6
+                      latencyMs: 80840
+                iterationLimit:
+                  summary: The agent ran out of steps
+                  value:
+                    answer: null
+                    stopReason: iteration_limit
+                    trace:
+                      - type: action
+                        tool: list_alerts
+                        args:
+                          status: all
+                    metrics:
+                      llmCalls: 10
+                      latencyMs: 41200
+        '400':
+          description: |
+            The body is not valid. Nothing ran. `issues` lists each problem with the path of the
+            field. This also happens when the `content-type: application/json` header is missing
+            (the body is then never read) and when the body is not valid JSON (`issues[0].path` is
+            empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvalidBodyError'
+              examples:
+                missingFields:
+                  summary: Blank message and missing reflect
+                  value:
+                    error: invalid_body
+                    message: The request body is invalid
+                    issues:
+                      - path: [message]
+                        message: 'Too small: expected string to have >=1 characters'
+                      - path: [reflect]
+                        message: 'Invalid input: expected boolean, received undefined'
+                notJson:
+                  summary: Body is not JSON
+                  value:
+                    error: invalid_body
+                    message: The request body is invalid
+                    issues:
+                      - path: []
+                        message: The body is not valid JSON
+        '422':
+          description: |
+            The body is well formed but `strategy` is not a known name. Names are case sensitive
+            (`React` is unknown). Nothing ran. `knownStrategies` lists the valid names.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnknownStrategyError'
+              example:
+                error: unknown_strategy
+                message: 'Unknown strategy "chain-of-thought". Known: react, plan-execute'
+                strategy: chain-of-thought
+                knownStrategies: [react, plan-execute]
+        '500':
+          description: |
+            Unexpected server error. This is a bug, not a caller mistake. The message is generic;
+            the details are in the server log.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalError'
+              example:
+                error: internal
+                message: Internal server error
+        '502':
+          description: |
+            The run started but failed, for example because the model provider returned an error or
+            was unreachable. Tools that ran before the failure may already have changed data, so
+            check `trace` (when present) before retrying. `runError.message` is a fixed text; the real
+            error is in the server log. `trace` and `metrics` are present when the strategy returned
+            a result with an error and absent when it threw.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunFailedError'
+              examples:
+                withTrace:
+                  summary: Strategy returned an error result
+                  value:
+                    error: run_failed
+                    message: The run stopped with an error
+                    runError:
+                      name: Error
+                      message: The run failed; details are in the server log
+                    trace:
+                      - type: action
+                        tool: list_alerts
+                        args:
+                          status: firing
+                    metrics:
+                      llmCalls: 1
+                      latencyMs: 320
+                thrown:
+                  summary: Strategy threw
+                  value:
+                    error: run_failed
+                    message: The run stopped with an error
+                    runError:
+                      name: TypeError
+                      message: The run failed; details are in the server log
+        '504':
+          description: |
+            The run did not finish within `timeoutMs` (180000 by default) and was cancelled. No
+            further model or tool call starts after this reply. A tool that was already running may
+            have completed its change, so there is no trace in this reply; check the data before
+            retrying.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeoutError'
+              example:
+                error: timeout
+                message: The run did not finish within 180000 ms
+                timeoutMs: 180000
+
+components:
+  schemas:
+    ChatRequest:
+      type: object
+      required: [message, reflect]
+      additionalProperties: true
+      description: What to ask and how to process it. Unknown fields are ignored.
+      properties:
+        message:
+          type: string
+          minLength: 1
+          description: |
+            The request in natural language. Leading and trailing spaces are trimmed, and a blank
+            message is rejected.
+          examples:
+            - Which alerts are firing?
+        strategy:
+          type: string
+          default: react
+          description: |
+            Reasoning strategy. Any string is accepted by the body check, but only the names in the
+            enum are known; other names get `422`.
+          enum: [react, plan-execute]
+        reflect:
+          type: boolean
+          description: |
+            Required, with no default, so the caller always chooses. `true` adds the critic, which
+            improves answer accuracy at the cost of more model calls and more time.
+
+    ChatReply:
+      type: object
+      required: [answer, stopReason, trace, metrics]
+      description: The result of a run that finished.
+      properties:
+        answer:
+          type: [string, 'null']
+          description: The final answer. `null` when `stopReason` is `iteration_limit`.
+        stopReason:
+          type: string
+          enum: [completed, iteration_limit]
+          description: Why the run ended.
+        trace:
+          type: array
+          description: Every step of the run, in order.
+          items:
+            $ref: '#/components/schemas/TraceEvent'
+        metrics:
+          $ref: '#/components/schemas/Metrics'
+
+    TraceEvent:
+      description: |
+        One step of a run. The `type` field says which kind:
+
+        - `thought`: the agent reasoning before acting.
+        - `action`: the agent calls a tool with `args`.
+        - `observation`: what the tool returned (a JSON string, or `Error: ...` text).
+        - `plan`: the list of steps (`plan-execute` only).
+        - `critique`: the critic's verdict (only with `reflect: true`).
+        - `answer`: a candidate or final answer. With reflection there can be several; the last one
+          is the reply's `answer`.
+      oneOf:
+        - $ref: '#/components/schemas/ThoughtEvent'
+        - $ref: '#/components/schemas/ActionEvent'
+        - $ref: '#/components/schemas/ObservationEvent'
+        - $ref: '#/components/schemas/PlanEvent'
+        - $ref: '#/components/schemas/CritiqueEvent'
+        - $ref: '#/components/schemas/AnswerEvent'
+      discriminator:
+        propertyName: type
+        mapping:
+          thought: '#/components/schemas/ThoughtEvent'
+          action: '#/components/schemas/ActionEvent'
+          observation: '#/components/schemas/ObservationEvent'
+          plan: '#/components/schemas/PlanEvent'
+          critique: '#/components/schemas/CritiqueEvent'
+          answer: '#/components/schemas/AnswerEvent'
+
+    ThoughtEvent:
+      type: object
+      required: [type, content]
+      properties:
+        type: { type: string, const: thought }
+        content: { type: string, description: "The agent's reasoning text." }
+
+    ActionEvent:
+      type: object
+      required: [type, tool, args]
+      properties:
+        type: { type: string, const: action }
+        tool:
+          type: string
+          enum: [list_alerts, open_incident, resolve_incident]
+          description: Tool the agent called.
+        args:
+          type: object
+          additionalProperties: true
+          description: |
+            Arguments sent to the tool. `list_alerts`: `status`. `open_incident`: `title`, `service`,
+            `severity`. `resolve_incident`: `id`.
+
+    ObservationEvent:
+      type: object
+      required: [type, tool, content]
+      properties:
+        type: { type: string, const: observation }
+        tool: { type: string, description: "Tool that produced this result." }
+        content:
+          type: string
+          description: "The tool's result as a JSON string, or `Error: ...` when the tool rejected the call."
+
+    PlanEvent:
+      type: object
+      required: [type, steps]
+      properties:
+        type: { type: string, const: plan }
+        steps:
+          type: array
+          items: { type: string }
+          description: Steps the planner intends to run, in order.
+
+    CritiqueEvent:
+      type: object
+      required: [type, approved, content]
+      properties:
+        type: { type: string, const: critique }
+        approved: { type: boolean, description: "Whether the critic accepted the answer." }
+        fix:
+          type: string
+          enum: [rerun, rewrite]
+          description: |
+            Present when the answer was rejected. `rewrite` regenerates the answer from the existing
+            tool results; `rerun` makes the agent act again with the tools, using the critique as
+            feedback (this can call write tools a second time).
+        content: { type: string, description: "The critic's explanation. Empty when approved." }
+
+    AnswerEvent:
+      type: object
+      required: [type, content]
+      properties:
+        type: { type: string, const: answer }
+        content: { type: string, description: "The answer text." }
+
+    Metrics:
+      type: object
+      required: [llmCalls, latencyMs]
+      description: Cost of the run.
+      properties:
+        llmCalls:
+          type: integer
+          minimum: 0
+          description: Number of model calls, including the critic's.
+        latencyMs:
+          type: integer
+          minimum: 0
+          description: Time the run took, in milliseconds.
+
+    ValidationIssue:
+      type: object
+      required: [path, message]
+      properties:
+        path:
+          type: array
+          items:
+            type: [string, integer]
+          description: Location of the problem in the body. Empty when the whole body is the problem.
+        message: { type: string }
+
+    InvalidBodyError:
+      type: object
+      required: [error, message, issues]
+      properties:
+        error: { type: string, const: invalid_body }
+        message: { type: string }
+        issues:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationIssue'
+
+    UnknownStrategyError:
+      type: object
+      required: [error, message, strategy, knownStrategies]
+      properties:
+        error: { type: string, const: unknown_strategy }
+        message: { type: string }
+        strategy: { type: string, description: "The name that was sent." }
+        knownStrategies:
+          type: array
+          items: { type: string }
+          description: Valid strategy names.
+
+    RunFailedError:
+      type: object
+      required: [error, message, runError]
+      properties:
+        error: { type: string, const: run_failed }
+        message: { type: string }
+        runError:
+          type: object
+          required: [name, message]
+          properties:
+            name: { type: string, description: "Class name of the error, such as `Error` or `TypeError`." }
+            message: { type: string, description: "Fixed text; the real message is in the server log." }
+        trace:
+          type: array
+          description: Steps taken before the failure. Absent when the strategy threw.
+          items:
+            $ref: '#/components/schemas/TraceEvent'
+        metrics:
+          $ref: '#/components/schemas/Metrics'
+
+    TimeoutError:
+      type: object
+      required: [error, message, timeoutMs]
+      properties:
+        error: { type: string, const: timeout }
+        message: { type: string }
+        timeoutMs: { type: integer, description: "The limit that was exceeded, in milliseconds." }
+
+    InternalError:
+      type: object
+      required: [error, message]
+      properties:
+        error: { type: string, const: internal }
+        message: { type: string }

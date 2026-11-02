@@ -47,6 +47,13 @@ curl -s localhost:3000/chat -H 'content-type: application/json' \
 | 502 | `run_failed` | The run returned an error or threw. The message is fixed and the real error is in the server log |
 | 504 | `timeout` | The run did not finish in 180 s; it is cancelled |
 
+The full OpenAPI description, with what each field means and an example for every status, is in
+[docs/openapi.yaml](docs/openapi.yaml). To browse it, open the file in the Swagger Editor
+(<https://editor.swagger.io>) or in a VS Code OpenAPI viewer extension.
+
+To try the endpoint in Insomnia, import [docs/insomnia.json](docs/insomnia.json) (Application menu,
+Import). It has one request per case above and a `base_url` environment variable.
+
 Every reply body is validated against its schema before it is sent. Full shapes are in
 [specs/003-chat-endpoint/contracts/chat-http.md](specs/003-chat-endpoint/contracts/chat-http.md).
 
