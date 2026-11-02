@@ -27,22 +27,33 @@ export class IncidentAlreadyResolvedError extends DomainError {
   }
 }
 
+/** The service exists but has no runbook. Lists the services that do, so the model can say so. */
+export class RunbookNotFoundError extends DomainError {
+  constructor(
+    readonly service: string,
+    readonly servicesWithRunbooks: readonly string[],
+  ) {
+    super(`No runbook for service: ${service}. Services with a runbook: ${servicesWithRunbooks.join(", ")}`);
+    this.name = "RunbookNotFoundError";
+  }
+}
+
+/** The database cannot be opened or created. Names the path and the reason, never file contents. */
+export class StoreOpenError extends Error {
+  constructor(
+    readonly path: string,
+    reason: string,
+  ) {
+    super(`Cannot open database ${path}: ${reason}`);
+    this.name = "StoreOpenError";
+  }
+}
+
 /** Names the missing or invalid settings, never their values. */
 export class ConfigurationError extends Error {
   constructor(readonly settings: readonly string[]) {
     super(`Missing or invalid setting: ${settings.join(", ")}`);
     this.name = "ConfigurationError";
-  }
-}
-
-/** The JSON database file cannot be parsed or does not match the store shape. */
-export class StoreFileError extends Error {
-  constructor(
-    readonly path: string,
-    reason: string,
-  ) {
-    super(`Invalid store file ${path}: ${reason}`);
-    this.name = "StoreFileError";
   }
 }
 

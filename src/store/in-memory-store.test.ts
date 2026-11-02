@@ -12,6 +12,11 @@ import {
   openIncident,
   resolveIncident,
 } from "./in-memory-store.ts";
+import { runOpsStoreContract } from "./ops-store-contract.ts";
+
+const NOW = "2026-11-02T12:00:00.000Z";
+
+runOpsStoreContract("memory", (now) => createStore({ now }));
 
 const incidentInput = { title: "Checkout latency", service: "checkout-api", severity: "high" } as const;
 
@@ -66,19 +71,21 @@ describe("openIncident", () => {
 describe("resolveIncident", () => {
   it("resolves an open incident and leaves the previous state unchanged", () => {
     const opened = openIncident(createInitialState(), incidentInput);
-    const resolved = resolveIncident(opened.state, "INC-001");
+    const resolved = resolveIncident(opened.state, { id: "INC-001" }, NOW);
     assert.equal(resolved.incident.status, "resolved");
+    assert.equal(resolved.incident.resolvedAt, NOW);
     assert.equal(opened.state.incidents[0]?.status, "open");
+    assert.equal(opened.state.incidents[0]?.resolvedAt, null);
   });
 
   it("rejects an unknown incident", () => {
-    assert.throws(() => resolveIncident(createInitialState(), "INC-404"), IncidentNotFoundError);
+    assert.throws(() => resolveIncident(createInitialState(), { id: "INC-404" }, NOW), IncidentNotFoundError);
   });
 
   it("rejects an incident that is already resolved", () => {
     const opened = openIncident(createInitialState(), incidentInput);
-    const resolved = resolveIncident(opened.state, "INC-001");
-    assert.throws(() => resolveIncident(resolved.state, "INC-001"), IncidentAlreadyResolvedError);
+    const resolved = resolveIncident(opened.state, { id: "INC-001" }, NOW);
+    assert.throws(() => resolveIncident(resolved.state, { id: "INC-001" }, NOW), IncidentAlreadyResolvedError);
   });
 });
 

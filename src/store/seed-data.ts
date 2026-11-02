@@ -1,12 +1,12 @@
-import type { Alert, Service } from "../domain/schemas.ts";
+import type { Alert, Runbook, Service } from "../domain/schemas.ts";
 
 export const seedServices: readonly Service[] = [
-  { name: "checkout-api" },
-  { name: "payments-worker" },
-  { name: "auth-service" },
-  { name: "search-api" },
-  { name: "notification-service" },
-  { name: "catalog-api" },
+  { name: "checkout-api", tier: 1 },
+  { name: "payments-worker", tier: 1 },
+  { name: "auth-service", tier: 1 },
+  { name: "search-api", tier: 2 },
+  { name: "notification-service", tier: 3 },
+  { name: "catalog-api", tier: 2 },
 ];
 
 // The oldest firing alert is ALT-003, not the lowest id, so "the oldest" needs firedAt.
@@ -66,5 +66,40 @@ export const seedAlerts: readonly Alert[] = [
     severity: "high",
     status: "firing",
     firedAt: "2026-11-02T09:50:00Z",
+  },
+];
+
+// Only the tier-1 services have a runbook; the rest exercise the "no runbook" error.
+export const seedRunbooks: readonly Runbook[] = [
+  {
+    service: "checkout-api",
+    title: "Checkout latency and pod restarts",
+    steps: [
+      "Check the p99 latency and error panels for checkout-api and note when they started rising.",
+      "Look at the pod restart count; if pods restart in a loop, read the last crash log before anything else.",
+      "If the latest deploy is under 1 hour old, roll it back and watch p99 for 10 minutes.",
+      "If latency stays high, scale checkout-api to double its replicas and check the database connection pool.",
+      "Open an incident with the evidence and page the checkout owner if p99 is still above 2s after 15 minutes.",
+    ],
+  },
+  {
+    service: "payments-worker",
+    title: "Payments queue backlog",
+    steps: [
+      "Check the queue depth and the age of the oldest message in the payments queue.",
+      "Confirm the workers are running and consuming; restart stuck workers one at a time.",
+      "Check the payment provider status page for an outage or throttling.",
+      "If the backlog keeps growing, add workers until the queue drains, and do not purge any message.",
+    ],
+  },
+  {
+    service: "auth-service",
+    title: "Login error rate",
+    steps: [
+      "Check the login error rate by error code to see if it is credentials, timeouts or 5xx.",
+      "For 5xx or timeouts, check the identity database and the session cache health.",
+      "Compare with the latest deploy and config change; roll back if the timing matches.",
+      "If only one client or region fails, check its rate limits and certificates before escalating.",
+    ],
   },
 ];

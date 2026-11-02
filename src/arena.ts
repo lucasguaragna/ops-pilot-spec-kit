@@ -5,8 +5,9 @@ import { createStrategy, strategyFactories } from "./agents/index.ts";
 import { createModel } from "./agents/model.ts";
 import { toRunError } from "./agents/run-outcome.ts";
 import { createTools } from "./agents/tools.ts";
-import { createStore } from "./store/in-memory-store.ts";
-import { createJsonFileBackend } from "./store/json-file-store.ts";
+import { StoreOpenError } from "./domain/errors.ts";
+import type { OpsStore } from "./store/ops-store.ts";
+import { openOpsStore } from "./store/sqlite-ops-store.ts";
 import { formatResult } from "./trace/format.ts";
 
 const REFLECT_PREFIX = "reflect:";
@@ -64,8 +65,11 @@ export function parseArenaArgs(argv: readonly string[]): ParsedArgs {
   return { ok: false, message: parsed.error.issues.map((issue) => issue.message).join("; ") };
 }
 
-/** Runs each strategy against the JSON database and returns the exit code. */
-export async function runArena({ input, strategies, maxIterations }: ArenaOptions): Promise<number> {
+/** Runs each strategy against the SQLite database and returns the exit code. */
+export async function runArena(
+  { input, strategies, maxIterations }: ArenaOptions,
+  store: OpsStore,
+): Promise<number> {
   let allCompleted = true;
   for (const name of strategies) {
     try {
@@ -73,7 +77,7 @@ export async function runArena({ input, strategies, maxIterations }: ArenaOption
       const strategy = createStrategy(
         strategyFactories,
         reflect ? name.slice(REFLECT_PREFIX.length) : name,
-        { model: createModel(), tools: [...createTools(createStore(createJsonFileBackend()))] },
+        { model: createModel(), tools: [...createTools(store)] },
         { reflect },
       );
       const result = await strategy.run(input, { maxIterations });
@@ -94,7 +98,19 @@ async function main(argv: readonly string[]): Promise<number> {
     console.error(`Invalid arguments: ${parsed.message}`);
     return 2;
   }
-  return runArena(parsed.options);
+  let store;
+  try {
+    store = openOpsStore();
+  } catch (error) {
+    if (!(error instanceof StoreOpenError)) throw error;
+    console.error(error.message);
+    return 1;
+  }
+  try {
+    return await runArena(parsed.options, store);
+  } finally {
+    store.close();
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

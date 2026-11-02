@@ -3,15 +3,17 @@ import {
   IncidentNotFoundError,
   ServiceNotFoundError,
 } from "../domain/errors.ts";
-import type { Alert, AlertFilter, Incident, OpenIncidentInput, Service } from "../domain/schemas.ts";
-import { seedAlerts, seedServices } from "./seed-data.ts";
+import type {
+  Alert,
+  AlertFilter,
+  Incident,
+  OpenIncidentInput,
+  ResolveIncidentInput,
+} from "../domain/schemas.ts";
+import { filterIncidents, formatIncidentId, runbookFor, type OpsStore, type StoreState } from "./ops-store.ts";
+import { seedAlerts, seedRunbooks, seedServices } from "./seed-data.ts";
 
-export interface StoreState {
-  readonly services: readonly Service[];
-  readonly alerts: readonly Alert[];
-  readonly incidents: readonly Incident[];
-  readonly nextIncidentNumber: number;
-}
+export type { StoreState } from "./ops-store.ts";
 
 export interface Transition {
   state: StoreState;
@@ -19,7 +21,13 @@ export interface Transition {
 }
 
 export function createInitialState(): StoreState {
-  return { services: seedServices, alerts: seedAlerts, incidents: [], nextIncidentNumber: 1 };
+  return {
+    services: seedServices,
+    alerts: seedAlerts,
+    incidents: [],
+    runbooks: seedRunbooks,
+    nextIncidentNumber: 1,
+  };
 }
 
 export function listAlerts(state: StoreState, status: AlertFilter): Alert[] {
@@ -34,11 +42,13 @@ export function openIncident(state: StoreState, input: OpenIncidentInput): Trans
     );
   }
   const incident: Incident = {
-    id: `INC-${String(state.nextIncidentNumber).padStart(3, "0")}`,
+    id: formatIncidentId(state.nextIncidentNumber),
     title: input.title,
     service: input.service,
     severity: input.severity,
     status: "open",
+    resolvedAt: null,
+    summary: null,
   };
   return {
     state: {
@@ -50,11 +60,12 @@ export function openIncident(state: StoreState, input: OpenIncidentInput): Trans
   };
 }
 
-export function resolveIncident(state: StoreState, id: string): Transition {
+/** `now` is passed in so the transition stays pure. */
+export function resolveIncident(state: StoreState, { id, summary }: ResolveIncidentInput, now: string): Transition {
   const current = state.incidents.find((incident) => incident.id === id);
   if (!current) throw new IncidentNotFoundError(id);
   if (current.status === "resolved") throw new IncidentAlreadyResolvedError(id);
-  const incident: Incident = { ...current, status: "resolved" };
+  const incident: Incident = { ...current, status: "resolved", resolvedAt: now, summary: summary ?? null };
   return {
     state: {
       ...state,
@@ -64,41 +75,23 @@ export function resolveIncident(state: StoreState, id: string): Transition {
   };
 }
 
-/** Where the store keeps its state between calls. */
-export interface StoreBackend {
-  load(): StoreState;
-  save(state: StoreState): void;
-}
-
-export function createMemoryBackend(initial: StoreState = createInitialState()): StoreBackend {
-  let state = initial;
-  return {
-    load: () => state,
-    save: (next) => {
-      state = next;
-    },
-  };
-}
-
-/** Thin stateful holder over the pure transitions above, used by the tools. */
-export interface Store {
-  getState(): StoreState;
-  listAlerts(status: AlertFilter): Alert[];
-  openIncident(input: OpenIncidentInput): Incident;
-  resolveIncident(id: string): Incident;
-  reset(): void;
-}
-
-export function createStore(backend: StoreBackend = createMemoryBackend()): Store {
+/** Thin stateful holder over the pure transitions above. Used by the bench and the tests. */
+export function createStore(options: { initial?: StoreState; now?: () => string } = {}): OpsStore {
+  const now = options.now ?? (() => new Date().toISOString());
+  let state = options.initial ?? createInitialState();
   const apply = (transition: Transition): Incident => {
-    backend.save(transition.state);
+    state = transition.state;
     return transition.incident;
   };
   return {
-    getState: () => backend.load(),
-    listAlerts: (status) => listAlerts(backend.load(), status),
-    openIncident: (input) => apply(openIncident(backend.load(), input)),
-    resolveIncident: (id) => apply(resolveIncident(backend.load(), id)),
-    reset: () => backend.save(createInitialState()),
+    getState: () => state,
+    listAlerts: (status) => listAlerts(state, status),
+    listIncidents: (status) => filterIncidents(state.incidents, status),
+    getRunbook: (service) => runbookFor(state.services, state.runbooks, service),
+    openIncident: (input) => apply(openIncident(state, input)),
+    resolveIncident: (input) => apply(resolveIncident(state, input, now())),
+    reset: () => {
+      state = createInitialState();
+    },
   };
 }

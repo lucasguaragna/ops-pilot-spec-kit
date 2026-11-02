@@ -33,7 +33,7 @@ export function createTools(store: Store) {
     schema: OpenIncidentInput,
   });
 
-  const resolveIncident = tool(async ({ id }) => toToolText(() => store.resolveIncident(id)), {
+  const resolveIncident = tool(async ({ id }) => toToolText(() => store.resolveIncident({ id, summary })), {
     name: "resolve_incident",
     description: "Resolve an open incident by its id, for example INC-001.",
     schema: ResolveIncidentInput,

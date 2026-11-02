@@ -23,7 +23,7 @@ function threeIncidents(severity: OpenIncidentInput["severity"] = "high"): Store
     (state, service) => open(state, service, severity),
     createInitialState(),
   );
-  return resolveIncident(opened, "INC-001").state;
+  return resolveIncident(opened, { id: "INC-001" }, "2026-11-02T12:00:00.000Z").state;
 }
 
 describe("parseBenchArgs", () => {
