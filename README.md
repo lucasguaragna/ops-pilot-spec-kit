@@ -4,6 +4,52 @@ OpsPilot is an on-call copilot that manages production alerts and incidents. Its
 LangChain/LangGraph agent running on OpenRouter. It is built while following a course on using AI
 agents inside VS Code, with Claude Code instead of GitHub Copilot.
 
+## Features
+
+- **Reasoning strategies.** `react` (tool loop) and `plan-execute` (plan, run each step, replan)
+  share one interface and report a trace, `llmCalls`, `latencyMs`, and a stop reason
+  (`completed`, `iteration_limit`, or `error`). Spec: `specs/001-reasoning-nucleus`.
+- **Reflection layer.** `withReflection` wraps any strategy with a critic that checks the answer
+  against the tool observations and regenerates it when rejected. Spec: `specs/002-reflection-layer`.
+- **Tools.** `list_alerts`, `open_incident`, and `resolve_incident`, backed by a store that is
+  in memory in tests and a JSON file (`data/db.json`) at runtime.
+- **Strategy registry.** `src/agents/index.ts` maps a name to a strategy and applies reflection on
+  request. The HTTP endpoint and the arena both use it.
+- **Arena and bench.** `arena` compares strategies on one request; `bench` scores them on three
+  scenarios.
+- **HTTP endpoint.** `POST /chat` runs a strategy under a timeout and cancels it when the time is up.
+  Spec: `specs/003-chat-endpoint`. See [HTTP API](#http-api).
+
+## HTTP API
+
+`npm run dev` starts the server on `PORT` (default `3000`). It listens on `127.0.0.1` only; set
+`HOST` to change that. The endpoint has no authentication and `open_incident` and `resolve_incident`
+change data, so do not expose it to a network you do not trust.
+
+`POST /chat` with a JSON body (send the `content-type: application/json` header):
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `message` | string | Required, not blank |
+| `reflect` | boolean | Required; `true` adds the critic |
+| `strategy` | string | Optional; `react` (default) or `plan-execute` |
+
+```sh
+curl -s localhost:3000/chat -H 'content-type: application/json' \
+  -d '{"message":"Which alerts are firing?","reflect":false}'
+```
+
+| Status | `error` | When |
+| --- | --- | --- |
+| 200 | none | Run finished: `{answer, stopReason, trace, metrics}`. `answer` is `null` at the iteration limit |
+| 400 | `invalid_body` | Body fails validation or is not JSON; `issues` lists the zod problems |
+| 422 | `unknown_strategy` | Unknown `strategy`; `knownStrategies` lists the valid names |
+| 502 | `run_failed` | The run returned an error or threw. The message is fixed and the real error is in the server log |
+| 504 | `timeout` | The run did not finish in 180 s; it is cancelled |
+
+Every reply body is validated against its schema before it is sent. Full shapes are in
+[specs/003-chat-endpoint/contracts/chat-http.md](specs/003-chat-endpoint/contracts/chat-http.md).
+
 ## Boilerplate
 
 The Git tag `boilerplate-v1` marks a reusable starting point. At that commit the project has
@@ -37,7 +83,7 @@ Then adapt these files:
 
 ## Requirements
 
-- Node.js 22 LTS
+- Node.js 22.9 or newer (22 LTS is the baseline)
 - `jq`, used by the prompt hook
 - Claude Code
 - [Spec Kit CLI](https://github.com/github/spec-kit), only to update or re-initialize Spec Kit:
@@ -56,7 +102,7 @@ Fill in `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` in `.env`.
 
 | Command | Purpose |
 | --- | --- |
-| `npm run dev` | Start the app |
+| `npm run dev` | Start the HTTP server (loads `.env`) |
 | `npm run arena` | Compare reasoning strategies on one request (`src/arena.ts`) |
 | `npm run seed` | Write the seed to `data/db.json` and print its counts |
 | `npm run bench` | Score `react` and `plan-execute` on three scenarios (`src/bench.ts`) |
@@ -95,7 +141,11 @@ Features follow the Spec Kit flow, with specs versioned in the repository:
 | `.claude/` | Permissions, prompt hook, and Spec Kit skills |
 | `.specify/` | Constitution, templates, and scripts |
 | `docs/prompts/` | Every prompt sent, in order |
-| `src/` | Application code |
+| `src/agents/` | Strategies, reflection, tools, model, and the strategy registry |
+| `src/http/` | Express app, `POST /chat` controller, service, and reply mapper |
+| `src/store/` | In-memory and JSON file stores, and the seed |
+| `src/domain/` | Types, schemas, and domain errors |
+| `specs/` | One folder per feature: spec, plan, tasks, and contracts |
 
 ## Replicating this project
 
