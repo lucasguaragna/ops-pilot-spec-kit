@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { RunResult } from "../domain/types.ts";
 import { UnknownStrategyError } from "../domain/errors.ts";
-import { toHttpReply, unknownStrategyReply } from "./chat-reply.ts";
+import { failureOf, toHttpReply, unknownStrategyReply } from "./chat-reply.ts";
 import { ChatReply, ErrorReply } from "./schemas.ts";
 
 const metrics = { llmCalls: 2, latencyMs: 10 };
@@ -40,7 +40,7 @@ describe("toHttpReply: failures", () => {
     assert.deepEqual(reply.body, {
       error: "run_failed",
       message: "The run stopped with an error",
-      runError: { name: "Error", message: "Provider returned 503" },
+      runError: { name: "Error", message: "The run failed; details are in the server log" },
       trace,
       metrics,
     });
@@ -53,8 +53,16 @@ describe("toHttpReply: failures", () => {
     assert.deepEqual(reply.body, {
       error: "run_failed",
       message: "The run stopped with an error",
-      runError: { name: "TypeError", message: "bad" },
+      runError: { name: "TypeError", message: "The run failed; details are in the server log" },
     });
+  });
+
+  it("exposes the failure behind a 502 only through failureOf", () => {
+    assert.deepEqual(failureOf({ kind: "thrown", error: new TypeError("secret detail") }), {
+      name: "TypeError",
+      message: "secret detail",
+    });
+    assert.equal(failureOf({ kind: "timeout", timeoutMs: 1 }), undefined);
   });
 
   it("maps a timeout to 504 with the limit", () => {

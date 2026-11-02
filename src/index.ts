@@ -16,6 +16,9 @@ if (!parsedPort.success) {
 }
 const port = parsedPort.data;
 
+// The endpoint has no authentication, so it listens on this machine only unless HOST says otherwise.
+const host = process.env.HOST?.trim() || "127.0.0.1";
+
 const model = createModel();
 const app = createApp({
   registry: strategyFactories,
@@ -25,4 +28,4 @@ const app = createApp({
   }),
 });
 
-app.listen(port, () => console.log(`OpsPilot listening on http://localhost:${port}`));
+app.listen(port, host, () => console.log(`OpsPilot listening on http://${host}:${port}`));

@@ -15,12 +15,26 @@ export interface HttpReply {
 }
 
 const RUN_FAILED_MESSAGE = "The run stopped with an error";
+const RUN_ERROR_MESSAGE = "The run failed; details are in the server log";
 
+/** The error text can come from the model provider, so only its class name reaches the client. */
 function runFailed(runError: RunError, partial?: { trace: TraceEvent[]; metrics: Metrics }): HttpReply {
   return {
     status: 502,
-    body: { error: "run_failed", message: RUN_FAILED_MESSAGE, runError, ...partial },
+    body: {
+      error: "run_failed",
+      message: RUN_FAILED_MESSAGE,
+      runError: { name: runError.name, message: RUN_ERROR_MESSAGE },
+      ...partial,
+    },
   };
+}
+
+/** The error behind a 502, for the server log; undefined when the outcome is not a failure. */
+export function failureOf(outcome: ChatOutcome): RunError | undefined {
+  if (outcome.kind === "thrown") return toRunError(outcome.error);
+  if (outcome.kind === "result" && outcome.result.stopReason === "error") return outcome.result.error;
+  return undefined;
 }
 
 /** Pure: picks the status and body for a finished request. Bodies never carry a stack. */

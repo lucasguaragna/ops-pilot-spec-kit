@@ -254,7 +254,7 @@ describe("POST /chat: run failures", () => {
 
     assert.equal(status, 502);
     assert.equal(json.error, "run_failed");
-    assert.deepEqual(json.runError, { name: "Error", message: "Provider returned 503" });
+    assert.deepEqual(json.runError, { name: "Error", message: "The run failed; details are in the server log" });
     assert.deepEqual(json.trace, [{ type: "thought", content: "trying" }]);
   });
 
@@ -267,9 +267,9 @@ describe("POST /chat: run failures", () => {
     const { status, text, json } = await postRaw(baseUrl, JSON.stringify(validBody));
 
     assert.equal(status, 502);
-    assert.equal(json.runError.message, "kaboom");
+    assert.equal(json.runError.message, "The run failed; details are in the server log");
     assert.equal("trace" in json, false);
-    assert.ok(!text.includes("stack") && !text.includes(" at "));
+    assert.ok(!text.includes("kaboom") && !text.includes("stack") && !text.includes(" at "));
   });
 
   it("replies 504 and aborts the run when it outlives the timeout", async () => {

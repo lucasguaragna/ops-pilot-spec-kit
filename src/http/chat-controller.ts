@@ -1,6 +1,6 @@
 import type { RequestHandler } from "express";
 import { UnknownStrategyError } from "../domain/errors.ts";
-import { toHttpReply, unknownStrategyReply, type HttpReply } from "./chat-reply.ts";
+import { failureOf, toHttpReply, unknownStrategyReply, type HttpReply } from "./chat-reply.ts";
 import { runChat } from "./chat-service.ts";
 import { ChatReply, ChatRequest, ErrorReply, toIssues } from "./schemas.ts";
 import type { ResolvedSettings } from "./server.ts";
@@ -20,7 +20,10 @@ export function postChat(settings: ResolvedSettings): RequestHandler {
       }
       let reply: HttpReply;
       try {
-        reply = toHttpReply(await runChat(settings, parsed.data));
+        const outcome = await runChat(settings, parsed.data);
+        const failure = failureOf(outcome);
+        if (failure) console.error(`Run failed: ${failure.name}: ${failure.message}`);
+        reply = toHttpReply(outcome);
       } catch (error) {
         if (!(error instanceof UnknownStrategyError)) throw error;
         reply = unknownStrategyReply(error);

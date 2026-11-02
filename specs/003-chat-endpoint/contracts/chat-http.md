@@ -61,13 +61,17 @@ Body that is not JSON: one issue with `"path": []` and a message saying the body
 {
   "error": "run_failed",
   "message": "The run stopped with an error",
-  "runError": { "name": "Error", "message": "Provider returned 503" },
+  "runError": { "name": "Error", "message": "The run failed; details are in the server log" },
   "trace": [],
   "metrics": { "llmCalls": 1, "latencyMs": 320 }
 }
 ```
 
-`trace` and `metrics` are left out when the run threw instead of returning a result.
+`trace` and `metrics` are left out when the run threw instead of returning a result. `runError.name`
+is the error class; the message is always the fixed text above, because the real one can come from
+the model provider. The real error is written to the server log.
+
+The server listens on `127.0.0.1` unless `HOST` is set, because the endpoint has no authentication.
 
 ### 504: timeout
 
