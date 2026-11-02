@@ -1,7 +1,11 @@
 import type { z } from "zod";
 
-/** Attempts per structured-output call; some OpenRouter models skip the tool call now and then. */
-export const STRUCTURED_ATTEMPTS = 2;
+/**
+ * Attempts per structured-output call. Routers like openrouter/free pick a model per call and
+ * ignore provider preferences, and some picks answer in text instead of the forced tool call
+ * (3 of 8 probes), so a few cheap retries make a miss on every attempt unlikely.
+ */
+export const STRUCTURED_ATTEMPTS = 5;
 
 /**
  * Calls a model bound with `withStructuredOutput(..., { includeRaw: true })`, retrying when the

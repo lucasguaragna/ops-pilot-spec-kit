@@ -56,6 +56,15 @@ describe("parseArenaArgs", () => {
     assert.deepEqual(parsed.options.strategies, ["react", "reflect:react", "reflect:plan-execute"]);
   });
 
+  it("accepts every name derived from the shared registry", () => {
+    const parsed = parseArenaArgs([
+      "--strategies",
+      "react,plan-execute,reflect:react,reflect:plan-execute",
+    ]);
+    assert.ok(parsed.ok);
+    assert.equal(parseArenaArgs(["--strategies", "foo"]).ok, false);
+  });
+
   it("lists the reflected strategies when a name is unknown", () => {
     const parsed = parseArenaArgs(["--strategies", "reflect:unknown"]);
     assert.ok(!parsed.ok);

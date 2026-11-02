@@ -10,6 +10,8 @@ import { isIterationLimitError, toRunError } from "./run-outcome.ts";
 import { structured } from "./structured-output.ts";
 
 export const MAX_STEPS = 8;
+/** Executor calls per step while the reply has no tool call. */
+export const EXECUTOR_ATTEMPTS = 3;
 export const PLAN_TOOL_NAME = "plan";
 export const REPLAN_TOOL_NAME = "replan";
 
@@ -43,8 +45,9 @@ const PLANNER_PROMPT =
   "fewest short steps, each one doable with a single round of calls to these tools only:\n" +
   "{tools}\nWrite each step as a plain instruction that names every value the tool needs, not as a " +
   "function call. When the request names services or alerts loosely, start with a step that lists " +
-  "the alerts, so later steps use exact names. Keep the order the user asked for. Return no steps " +
-  "when nothing needs doing.";
+  "the alerts, so later steps use exact names. Keep the order the user asked for. Every step must " +
+  "call a tool: never add a step that only reports, counts, or summarizes, since the final answer " +
+  "covers that. Return no steps when nothing needs doing.";
 
 const EXECUTOR_PROMPT =
   "You are OpsPilot's executor. Complete only the current step, calling the tools it needs. Never " +
@@ -59,7 +62,9 @@ const REPLANNER_PROMPT =
   "to fix it, such as a list of known names, adjust with a corrected step instead of skipping it. " +
   "Never swap a service the user named for a different one: when it does not exist, drop that " +
   "step, keep the rest, and report it in the final answer. Choose finish only when no remaining " +
-  "step can still be done. The final answer states only what the completed results show; never " +
+  "step can still be done: an action the request asks for, such as opening or resolving an " +
+  "incident, is done only when a completed result shows it. Never add a step that only reports or " +
+  "counts; once every action has its result, finish and put the report in the answer. The final answer states only what the completed results show; never " +
   "say something was opened or resolved without a result that proves it.";
 
 const RESPONDER_PROMPT =
@@ -139,6 +144,8 @@ export function createPlanExecuteStrategy(
       const output: unknown = await tool.invoke(call.args, config);
       return typeof output === "string" ? output : JSON.stringify(output);
     } catch (error) {
+      // An abort must stop the run, not become an observation the model reads.
+      if (config.signal?.aborted) throw error;
       return `Error: ${toRunError(error).message}`;
     }
   }
@@ -157,7 +164,12 @@ export function createPlanExecuteStrategy(
         const request =
           `Request: ${state.input}\n\nCompleted steps:\n${describeDone(state.done)}\n\n` +
           `Current step: ${step}\n\nLater steps, not yours:\n${describePlan(rest)}`;
-        const response = await executor.invoke([new SystemMessage(EXECUTOR_PROMPT), new HumanMessage(request)], config);
+        const messages = [new SystemMessage(EXECUTOR_PROMPT), new HumanMessage(request)];
+        // Steps always need a tool, so a text-only reply is usually a routed model ignoring the tools.
+        let response = await executor.invoke(messages, config);
+        for (let attempt = 1; attempt < EXECUTOR_ATTEMPTS && (response.tool_calls?.length ?? 0) === 0; attempt++) {
+          response = await executor.invoke(messages, config);
+        }
         const trace: TraceEvent[] = [];
         const observations: string[] = [];
         for (const call of response.tool_calls ?? []) {
@@ -208,7 +220,7 @@ export function createPlanExecuteStrategy(
 
   return {
     name: useReplanner ? "plan-execute" : "plan-execute:no-replanner",
-    async run(input, { maxIterations }): Promise<RunResult> {
+    async run(input, { maxIterations, signal }): Promise<RunResult> {
       const started = Date.now();
       const counter = new LlmCallCounter();
       const stepCap = Math.min(maxIterations, MAX_STEPS);
@@ -220,7 +232,7 @@ export function createPlanExecuteStrategy(
           const stream = await graph.stream(
             { input, plan: [] },
             // Safety net only; the step cap on `done` is the real limit.
-            { streamMode: "values", callbacks: [counter], recursionLimit: stepCap * 2 + 10 },
+            { streamMode: "values", callbacks: [counter], recursionLimit: stepCap * 2 + 10, signal },
           );
           for await (const values of stream) state = values;
           return state?.answer === undefined

@@ -45,3 +45,14 @@ export class StoreFileError extends Error {
     this.name = "StoreFileError";
   }
 }
+
+/** A request named a strategy the registry does not have. Not a DomainError: the model never sees it. */
+export class UnknownStrategyError extends Error {
+  constructor(
+    readonly strategy: string,
+    readonly knownStrategies: readonly string[],
+  ) {
+    super(`Unknown strategy "${strategy}". Known: ${knownStrategies.join(", ")}`);
+    this.name = "UnknownStrategyError";
+  }
+}

@@ -1,30 +1,21 @@
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import { createStrategy, strategyFactories } from "./agents/index.ts";
 import { createModel } from "./agents/model.ts";
-import { createPlanExecuteStrategy } from "./agents/plan-and-execute.ts";
-import { createReactStrategy, type StrategyDependencies } from "./agents/react.ts";
-import { withReflection } from "./agents/reflection.ts";
 import { toRunError } from "./agents/run-outcome.ts";
 import { createTools } from "./agents/tools.ts";
-import type { ReasoningStrategy } from "./domain/types.ts";
 import { createStore } from "./store/in-memory-store.ts";
 import { createJsonFileBackend } from "./store/json-file-store.ts";
 import { formatResult } from "./trace/format.ts";
 
+const REFLECT_PREFIX = "reflect:";
+
 export const DEFAULT_INPUT =
   "Check which alerts are firing and open an incident for the most severe one.";
 
-const strategyFactories = {
-  react: createReactStrategy,
-  "plan-execute": createPlanExecuteStrategy,
-  "reflect:react": (dependencies) =>
-    withReflection(createReactStrategy(dependencies), { model: dependencies.model }),
-  "reflect:plan-execute": (dependencies) =>
-    withReflection(createPlanExecuteStrategy(dependencies), { model: dependencies.model }),
-} satisfies Record<string, (dependencies: StrategyDependencies) => ReasoningStrategy>;
-
-const strategyNames = Object.keys(strategyFactories) as [keyof typeof strategyFactories];
+const baseNames = Object.keys(strategyFactories);
+const strategyNames = [...baseNames, ...baseNames.map((name) => `${REFLECT_PREFIX}${name}`)] as [string, ...string[]];
 const StrategyName = z.enum(strategyNames, {
   error: (issue) => `Unknown strategy "${String(issue.input)}". Known: ${strategyNames.join(", ")}`,
 });
@@ -78,10 +69,13 @@ export async function runArena({ input, strategies, maxIterations }: ArenaOption
   let allCompleted = true;
   for (const name of strategies) {
     try {
-      const strategy = strategyFactories[name]({
-        model: createModel(),
-        tools: [...createTools(createStore(createJsonFileBackend()))],
-      });
+      const reflect = name.startsWith(REFLECT_PREFIX);
+      const strategy = createStrategy(
+        strategyFactories,
+        reflect ? name.slice(REFLECT_PREFIX.length) : name,
+        { model: createModel(), tools: [...createTools(createStore(createJsonFileBackend()))] },
+        { reflect },
+      );
       const result = await strategy.run(input, { maxIterations });
       console.log(formatResult(strategy.name, result), "\n");
       if (result.stopReason !== "completed") allCompleted = false;

@@ -136,7 +136,7 @@ export function withReflection(strategy: ReasoningStrategy, options: ReflectionO
     async run(input, runOptions): Promise<RunResult> {
       const started = Date.now();
       const counter = new LlmCallCounter();
-      const config = { callbacks: [counter] };
+      const config = { callbacks: [counter], signal: runOptions.signal };
       let trace: TraceEvent[] = [];
       let baseCalls = 0;
       const metrics = () => ({ llmCalls: baseCalls + counter.count, latencyMs: Date.now() - started });
@@ -157,21 +157,30 @@ export function withReflection(strategy: ReasoningStrategy, options: ReflectionO
             metrics: metrics(),
           });
 
+          runOptions.signal?.throwIfAborted();
           const verdict = await structured("critic", verdictSchema, () =>
             critic.invoke(criticMessages(input, answer, trace), config),
           ).catch(asError);
-          if (verdict instanceof Error) return keepAnswer(verdict);
+          if (verdict instanceof Error) {
+            // An abort is not a critic failure: it must end the run instead of keeping the answer.
+            runOptions.signal?.throwIfAborted();
+            return keepAnswer(verdict);
+          }
           trace = [...trace, toCritique(verdict)];
 
           const step = nextStep(verdict, regenerations, maxReflections);
           if (step === "stop") return { stopReason: "completed", answer, trace, metrics: metrics() };
           if (step === "rerun") {
+            runOptions.signal?.throwIfAborted();
             attempt = await strategy.run(rerunInput(input, verdict.feedback, trace), runOptions);
           } else {
             const reply = await model
               .invoke(rewriteMessages(input, answer, verdict.feedback, trace), config)
               .catch(asError);
-            if (reply instanceof Error) return keepAnswer(reply);
+            if (reply instanceof Error) {
+              runOptions.signal?.throwIfAborted();
+              return keepAnswer(reply);
+            }
             // The rewrite call is counted by the counter, so the attempt adds no calls of its own.
             attempt = {
               stopReason: "completed",

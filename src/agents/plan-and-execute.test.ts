@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createStore } from "../store/in-memory-store.ts";
 import { ScriptedChatModel, textTurn, toolCallTurn, type ScriptedTurn } from "../testing/scripted-chat-model.ts";
+import { tool } from "@langchain/core/tools";
 import { END } from "@langchain/langgraph";
+import { z } from "zod";
 import {
   afterExecutor,
+  EXECUTOR_ATTEMPTS,
   applyReplan,
   cleanSteps,
   createPlanExecuteStrategy,
@@ -12,6 +15,7 @@ import {
   REPLAN_TOOL_NAME,
   type Replan,
 } from "./plan-and-execute.ts";
+import { STRUCTURED_ATTEMPTS } from "./structured-output.ts";
 import { createTools } from "./tools.ts";
 
 const plan = (steps: string[]) => toolCallTurn(PLAN_TOOL_NAME, { steps });
@@ -146,7 +150,7 @@ describe("plan-execute strategy", () => {
     const result = await run([textTurn("No plan.")]).result;
 
     assert.equal(result.stopReason, "error");
-    assert.match(result.error.message, /planner returned no structured output after 2 attempts/);
+    assert.match(result.error.message, new RegExp(`planner returned no structured output after ${STRUCTURED_ATTEMPTS} attempts`));
   });
 
   it("keeps the partial trace when the model fails", async () => {
@@ -206,5 +210,77 @@ describe("plan-execute without a replanner", () => {
     const result = await strategy.run("Check three times", { maxIterations: 2 });
     assert.equal(result.stopReason, "iteration_limit");
     assert.equal(result.metrics.llmCalls, 3);
+  });
+});
+
+describe("plan-execute executor retry", () => {
+  it("re-asks the executor when a step reply has no tool call", async () => {
+    const { model, result } = run([
+      plan(["List firing alerts"]),
+      textTurn("I have no access to your alerts."),
+      listFiring,
+      replan({ action: "finish", answer: "Four alerts are firing." }),
+    ]);
+    const outcome = await result;
+    assert.equal(outcome.answer, "Four alerts are firing.");
+    assert.equal(outcome.trace.filter((event) => event.type === "action").length, 1);
+    assert.equal(outcome.metrics.llmCalls, 4);
+    assert.equal(model.calls, 4);
+  });
+
+  it("records the text after EXECUTOR_ATTEMPTS replies without a tool call", async () => {
+    const { result } = run([
+      plan(["Summarize"]),
+      ...Array.from({ length: EXECUTOR_ATTEMPTS }, () => textTurn("Nothing to do.")),
+      replan({ action: "finish", answer: "Done." }),
+    ]);
+    const outcome = await result;
+    assert.deepEqual(outcome.trace[1], { type: "thought", content: "Nothing to do." });
+    assert.equal(outcome.metrics.llmCalls, 1 + EXECUTOR_ATTEMPTS + 1);
+  });
+});
+
+describe("plan-execute strategy: abort signal", () => {
+  it("makes no planner call when the signal is already aborted", async () => {
+    const model = new ScriptedChatModel([plan(["List alerts"])]);
+    const controller = new AbortController();
+    controller.abort();
+    const strategy = createPlanExecuteStrategy({ model, tools: [...createTools(createStore())] });
+
+    const result = await strategy.run("hi", { maxIterations: 10, signal: controller.signal });
+
+    assert.equal(result.stopReason, "error");
+    assert.equal(model.calls, 0);
+  });
+
+  it("runs no later step and makes no model call after a tool aborts", async () => {
+    const controller = new AbortController();
+    let secondCalls = 0;
+    const first = tool(
+      async () => {
+        controller.abort();
+        return "first done";
+      },
+      { name: "first", description: "Aborts the run", schema: z.object({}) },
+    );
+    const second = tool(
+      async () => {
+        secondCalls += 1;
+        return "second done";
+      },
+      { name: "second", description: "Must never run", schema: z.object({}) },
+    );
+    const model = new ScriptedChatModel([
+      plan(["Run first", "Run second"]),
+      toolCallTurn("first", {}),
+      toolCallTurn("second", {}),
+    ]);
+    const strategy = createPlanExecuteStrategy({ model, tools: [first, second] });
+
+    const result = await strategy.run("hi", { maxIterations: 10, signal: controller.signal });
+
+    assert.equal(result.stopReason, "error");
+    assert.equal(secondCalls, 0);
+    assert.equal(model.calls, 2, "planner and the first executor turn only");
   });
 });

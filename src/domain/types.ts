@@ -27,6 +27,8 @@ export type RunResult = { trace: TraceEvent[]; metrics: Metrics } & (
 
 export interface RunOptions {
   maxIterations: number;
+  /** Once aborted, no new model or tool call starts. */
+  signal?: AbortSignal;
 }
 
 export interface ReasoningStrategy {

@@ -8,11 +8,12 @@ repository follows the course with Claude Code.
 
 ## Stack
 
-- Node.js 22 LTS
+- Node.js 22.9 or newer (22 LTS baseline)
 - TypeScript ESM with `strict: true`
 - `zod` at the boundary (HTTP/CLI) to validate input and output
 - Tests with `node:test` via `tsx`
-- Express, with MySQL as the database
+- Express, with MySQL as the database (deferred: the JSON file store is used until then; see the
+  constitution's Stack Exceptions)
 
 ## Commands
 

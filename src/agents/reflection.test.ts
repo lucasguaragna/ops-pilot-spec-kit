@@ -12,6 +12,7 @@ import {
   withReflection,
   type Verdict,
 } from "./reflection.ts";
+import { STRUCTURED_ATTEMPTS } from "./structured-output.ts";
 
 const verdict = (value: Partial<Verdict> & { approved: boolean }) =>
   toolCallTurn(VERDICT_TOOL_NAME, { feedback: "", ...value });
@@ -157,7 +158,7 @@ describe("withReflection", () => {
     assert.equal(model.calls, 0);
   });
 
-  it("keeps the answer when the critic returns no valid verdict twice", async () => {
+  it("keeps the answer when the critic returns no valid verdict on any attempt", async () => {
     const noFix = verdict({ approved: false, feedback: "x" });
     const { result } = reflect([completed("Opened INC-001", openTrace)], [noFix, textTurn("ok")]);
     const run = await result;
@@ -165,9 +166,9 @@ describe("withReflection", () => {
     assert.equal(run.answer, "Opened INC-001");
     assert.deepEqual(run.trace, [
       ...openTrace,
-      skippedReflection(new Error("The critic returned no structured output after 2 attempts")),
+      skippedReflection(new Error(`The critic returned no structured output after ${STRUCTURED_ATTEMPTS} attempts`)),
     ]);
-    assert.equal(run.metrics.llmCalls, 4);
+    assert.equal(run.metrics.llmCalls, 2 + STRUCTURED_ATTEMPTS);
   });
 
   it("keeps the rejected answer when the rewrite call fails", async () => {
@@ -240,5 +241,62 @@ describe("withReflection", () => {
     assert.equal(run.stopReason, "error");
     assert.equal(critiques(run.trace).length, 1);
     assert.equal(run.metrics.llmCalls, 2 + 1 + 1);
+  });
+});
+
+describe("withReflection: abort signal", () => {
+  const options = (signal: AbortSignal) => ({ maxIterations: 10, signal });
+
+  it("hands the same signal to the base strategy", async () => {
+    const seen: (AbortSignal | undefined)[] = [];
+    const base: ReasoningStrategy = {
+      name: "fake",
+      async run(_input, runOptions) {
+        seen.push(runOptions.signal);
+        return completed("ok");
+      },
+    };
+    const controller = new AbortController();
+    const strategy = withReflection(base, { model: new ScriptedChatModel([approve]) });
+
+    await strategy.run("hi", options(controller.signal));
+
+    assert.deepEqual(seen, [controller.signal]);
+  });
+
+  it("calls no critic when the base aborts and still returns a completed answer", async () => {
+    const controller = new AbortController();
+    const base: ReasoningStrategy = {
+      name: "fake",
+      async run() {
+        controller.abort();
+        return completed("late answer");
+      },
+    };
+    const model = new ScriptedChatModel([approve]);
+
+    const result = await withReflection(base, { model }).run("hi", options(controller.signal));
+
+    assert.equal(result.stopReason, "error");
+    assert.equal(model.calls, 0);
+  });
+
+  it("returns an error, not the kept answer, when the critic aborts and rejects", async () => {
+    const controller = new AbortController();
+    class AbortingCritic extends ScriptedChatModel {
+      override bindTools(): this {
+        return this;
+      }
+      override async _generate(): Promise<never> {
+        controller.abort();
+        throw new Error("Request aborted");
+      }
+    }
+    const strategy = withReflection(fakeStrategy([completed("answer")]), { model: new AbortingCritic([approve]) });
+
+    const result = await strategy.run("hi", options(controller.signal));
+
+    assert.equal(result.stopReason, "error");
+    assert.equal(result.answer, null);
   });
 });

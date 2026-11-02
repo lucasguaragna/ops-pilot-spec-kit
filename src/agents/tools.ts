@@ -18,7 +18,8 @@ export function createTools(store: Store) {
     name: "list_alerts",
     description:
       "List monitoring alerts. Use when the on-call engineer asks what is firing, how the services " +
-      "are doing, or how the on-call shift is going. status: firing | resolved | all.",
+      "are doing, or how the on-call shift is going. status: firing | resolved | all. Each alert has " +
+      "firedAt, when it started firing; the oldest alert is the one with the earliest firedAt.",
     schema: ListAlertsInput,
   });
 
