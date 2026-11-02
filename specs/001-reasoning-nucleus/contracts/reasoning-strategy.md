@@ -27,6 +27,7 @@ interface ReasoningStrategy {
 | `name` | Limit | Trace events |
 | --- | --- | --- |
 | `react` | `maxIterations` model turns | `thought`, `action`, `observation`, `answer` |
-| `plan-execute` | `min(maxIterations, 8)` steps | `plan`, `action`, `observation`, `answer` |
+| `plan-execute` | `min(maxIterations, 8)` steps | `plan`, `action`, `observation`, `thought`, `answer` |
 
 Plan-and-Execute adds a `plan` event when the plan is created and each time the replanner changes it.
+A step the model completes without tools records its text as a `thought`.

@@ -1,0 +1,57 @@
+// Referencia para a factory src/agents/model.ts
+import { ChatOpenAI } from "@langchain/openai";
+
+export function createModel(){
+    return new ChatOpenAI({
+        modelName: process.env.OPENROUTER_MODEL || "gpt-4o-mini",
+        openAIApiKey: process.env.OPENROUTER_API_KEY,
+        configuration: { baseURL: "https://openrouter.ai/api/v1" },
+        temperature: 0,
+    });
+}
+
+
+// Referencia para src/agents/tools.ts
+
+import { Tool } from "langchain/core/tools";
+import { z } from "zod";
+import {store} from "./ops-store.ts";
+
+export const listAlertos = tool({
+async ({status}) => JSON.stringify(store.listAlerts(status)),
+name: "listAlerts",
+description: "Lista os alertas de monitoramento. Use quando o plantonista perguntar o que está disparando, o estado dos serviços ou 'como está o plantão'. status: firing | resolved | all",
+schema: z.object({
+    status: z.enum(["firing", "resolved", "all"]).default("firing"),
+}),
+})
+
+
+
+// Referencia para src/agents/react.ts
+
+import {createReactAgent} from "@langchain/langgraph/prebuilt"
+
+export const reactStrategy = ReasoningStrategy = {
+    name: "react",
+    async run(input){
+        const started = Date.now();
+        const agent = createReactAgent({
+            llm: createModel(),
+            tools: opsTools
+        });
+        const result = await agent.invoke(
+            {messages: [{role: "user", content: input}]},
+            {recursionsLimit: 12} //guardrail - nada de loop infinito
+        )
+
+        return {
+            answer: lastText(result.messages),
+            trace: toTrace(result.messages),
+            metrics: {
+                llmCalls: countAiMessages(result.messages),
+                latency: Date.now() - started
+            }
+        }
+    }
+}

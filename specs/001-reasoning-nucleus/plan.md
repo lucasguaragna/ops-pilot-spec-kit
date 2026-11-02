@@ -86,14 +86,19 @@ src/
 │   ├── format.test.ts
 │   ├── from-messages.ts         # Pure message-to-trace mapping
 │   └── from-messages.test.ts
-└── agents/
-    ├── model.ts                 # Single model factory
-    ├── llm-counter.ts           # Callback that counts LLM calls
-    ├── llm-counter.test.ts
-    ├── tools.ts                 # list_alerts, open_incident, resolve_incident
-    ├── react.ts                 # ReAct strategy
-    └── plan-and-execute.ts      # Plan-and-Execute graph
+├── agents/
+│   ├── model.ts                 # Single model factory
+│   ├── llm-counter.ts           # Callback that counts LLM calls
+│   ├── run-outcome.ts           # Pure helpers mapping thrown errors to RunResult fields
+│   ├── tools.ts                 # list_alerts, open_incident, resolve_incident
+│   ├── react.ts                 # ReAct strategy
+│   ├── plan-and-execute.ts      # Plan-and-Execute graph
+│   └── *.test.ts                # One test file per module above, except run-outcome.ts
+└── testing/
+    └── scripted-chat-model.ts   # Test-only fake chat model that replays scripted turns
 ```
+
+`src/arena.test.ts` covers flag parsing.
 
 `src/index.ts` stays empty. `package.json` gains a `seed` script, and `arena` gains `.env` loading.
 

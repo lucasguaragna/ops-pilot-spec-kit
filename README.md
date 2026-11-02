@@ -57,12 +57,16 @@ Fill in `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` in `.env`.
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Start the app |
-| `npm run arena` | Run `src/arena.ts` |
+| `npm run arena` | Compare reasoning strategies on one request (`src/arena.ts`) |
+| `npm run seed` | Load the in-memory seed and print its counts |
 | `npm run bench` | Run `src/bench.ts` |
 | `npm test` | Run the tests |
 | `npm run typecheck` | Type-check without emitting |
 
-`arena` and `bench` fail until their source files exist. The scripts do not load `.env` yet.
+`arena` loads `.env` through Node's native `--env-file-if-exists` flag. Its flags are
+`--input`, `--strategies` (default `react,plan-execute`), and `--max-iterations` (default `10`);
+see [specs/001-reasoning-nucleus/contracts/arena-cli.md](specs/001-reasoning-nucleus/contracts/arena-cli.md).
+`bench` fails until `src/bench.ts` exists.
 
 ## Workflow
 

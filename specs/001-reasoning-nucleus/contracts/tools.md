@@ -6,8 +6,8 @@ text with `Error:` first, so the model can react and the run continues. Field ru
 
 ## list_alerts
 
-- **Input**: `{ status: "firing" | "resolved" }`
-- **Output**: Array of alerts with that status
+- **Input**: `{ status?: "firing" | "resolved" | "all" }`, default `firing`
+- **Output**: Array of alerts with that status, or every alert for `all`
 
 ## open_incident
 
