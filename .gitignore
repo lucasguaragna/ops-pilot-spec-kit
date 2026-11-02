@@ -6,5 +6,5 @@ dist
 .claude/settings.local.json
 .specify/extensions/.cache/
 
-# Runtime JSON database; recreate with npm run seed
+# SQLite database (OPSPILOT_DB, default ./data/opspilot.db); recreate with npm run seed
 data/

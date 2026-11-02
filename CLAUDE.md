@@ -8,12 +8,12 @@ repository follows the course with Claude Code.
 
 ## Stack
 
-- Node.js 22.9 or newer (22 LTS baseline)
+- Node.js 22.13 or newer (22 LTS baseline; first 22.x where `node:sqlite` needs no flag)
 - TypeScript ESM with `strict: true`
 - `zod` at the boundary (HTTP/CLI) to validate input and output
 - Tests with `node:test` via `tsx`
-- Express, with MySQL as the database (deferred: the JSON file store is used until then; see the
-  constitution's Stack Exceptions)
+- Express, with SQLite through `node:sqlite` (`DatabaseSync`); file path in `OPSPILOT_DB`
+  (default `./data/opspilot.db`), `":memory:"` in tests. Every query uses a prepared statement
 
 ## Commands
 
