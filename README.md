@@ -11,8 +11,9 @@ agents inside VS Code, with Claude Code instead of GitHub Copilot.
   (`completed`, `iteration_limit`, or `error`). Spec: `specs/001-reasoning-nucleus`.
 - **Reflection layer.** `withReflection` wraps any strategy with a critic that checks the answer
   against the tool observations and regenerates it when rejected. Spec: `specs/002-reflection-layer`.
-- **Tools.** `list_alerts`, `open_incident`, and `resolve_incident`, backed by a store that is
-  in memory in tests and a JSON file (`data/db.json`) at runtime.
+- **Tools.** `list_alerts`, `open_incident`, `resolve_incident`, `list_incidents`, and
+  `get_runbook`, backed by a SQLite store (`node:sqlite`) at `OPSPILOT_DB`, default
+  `./data/opspilot.db`. Tests use an in-memory database. Spec: `specs/004-sqlite-ops-store`.
 - **Strategy registry.** `src/agents/index.ts` maps a name to a strategy and applies reflection on
   request. The HTTP endpoint and the arena both use it.
 - **Arena and bench.** `arena` compares strategies on one request; `bench` scores them on three
@@ -90,7 +91,7 @@ Then adapt these files:
 
 ## Requirements
 
-- Node.js 22.9 or newer (22 LTS is the baseline)
+- Node.js 22.13 or newer (first 22.x where `node:sqlite` needs no flag)
 - `jq`, used by the prompt hook
 - Claude Code
 - [Spec Kit CLI](https://github.com/github/spec-kit), only to update or re-initialize Spec Kit:
@@ -111,7 +112,7 @@ Fill in `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` in `.env`.
 | --- | --- |
 | `npm run dev` | Start the HTTP server (loads `.env`) |
 | `npm run arena` | Compare reasoning strategies on one request (`src/arena.ts`) |
-| `npm run seed` | Write the seed to `data/db.json` and print its counts |
+| `npm run seed` | Reset the database to the seed (deletes every incident) and print its counts |
 | `npm run bench` | Score `react` and `plan-execute` on three scenarios (`src/bench.ts`) |
 | `npm test` | Run the tests |
 | `npm run typecheck` | Type-check without emitting |
@@ -123,8 +124,10 @@ text (`npm run arena -- "how many critical alerts are firing?" --strategies reac
 `reflect:plan-execute`; a `reflect:` strategy adds a critic that checks the answer against the tool
 observations and regenerates it when rejected (`npm run arena -- "..." --strategies react,reflect:react`);
 see [specs/001-reasoning-nucleus/contracts/arena-cli.md](specs/001-reasoning-nucleus/contracts/arena-cli.md).
-`arena` reads and changes `data/db.json`, so incidents persist between runs; `npm run seed` resets
-it. Tests use memory and never touch the file.
+`arena` reads and changes the SQLite database at `OPSPILOT_DB` (default `./data/opspilot.db`), so
+incidents persist between runs. Opening the app only adds missing seed rows. `npm run seed` is the
+destructive reset: it deletes every incident and restores the seeded records. Tests use `:memory:`
+and never touch the file.
 
 `bench` runs scenarios C1 (count critical alerts), C2 (open three sev2 incidents in order and
 resolve the first), and C3 (open an incident for the oldest firing alert and say how many are left)
@@ -150,7 +153,7 @@ Features follow the Spec Kit flow, with specs versioned in the repository:
 | `docs/prompts/` | Every prompt sent, in order |
 | `src/agents/` | Strategies, reflection, tools, model, and the strategy registry |
 | `src/http/` | Express app, `POST /chat` controller, service, and reply mapper |
-| `src/store/` | In-memory and JSON file stores, and the seed |
+| `src/store/` | `OpsStore` interface, SQLite and in-memory stores, and the seed |
 | `src/domain/` | Types, schemas, and domain errors |
 | `specs/` | One folder per feature: spec, plan, tasks, and contracts |
 

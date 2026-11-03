@@ -34,9 +34,9 @@ through `tsx`. Gates: `npm run typecheck` and `npm test`.
 
 **Purpose**: Drop what the feature retires before any code changes.
 
-- [ ] T001 Remove the unused `sequelize` dependency from `package.json` and run `npm install` so
+- [X] T001 Remove the unused `sequelize` dependency from `package.json` and run `npm install` so
   `package-lock.json` matches (R12).
-- [ ] T002 [P] In `.gitignore`, replace the comment `# Runtime JSON database; recreate with npm run seed`
+- [X] T002 [P] In `.gitignore`, replace the comment `# Runtime JSON database; recreate with npm run seed`
   above `data/` with `# SQLite database (OPSPILOT_DB, default ./data/opspilot.db); recreate with npm run seed`.
   Keep the `data/` line (FR-013).
 
@@ -50,7 +50,7 @@ store on that interface. Every story depends on this phase.
 **⚠️ CRITICAL**: No user story work starts until this phase is done and `npm run typecheck` and
 `npm test` are green.
 
-- [ ] T003 [P] Extend `src/domain/schemas.ts` per [data-model.md](data-model.md):
+- [X] T003 [P] Extend `src/domain/schemas.ts` per [data-model.md](data-model.md):
   - add `ServiceTier = z.union([z.literal(1), z.literal(2), z.literal(3)])` (1 critical,
     2 important, 3 auxiliary) and its type;
   - add `tier: ServiceTier` to `Service`;
@@ -65,20 +65,20 @@ store on that interface. Every story depends on this phase.
   - add `summary: z.string().trim().min(1).optional()` to `ResolveIncidentInput`, with a
     `.describe()` ("what fixed it");
   - export `type ResolveIncidentInput`.
-- [ ] T004 [P] In `src/domain/errors.ts`, add `RunbookNotFoundError extends DomainError` with
+- [X] T004 [P] In `src/domain/errors.ts`, add `RunbookNotFoundError extends DomainError` with
   constructor `(service: string, servicesWithRunbooks: readonly string[])` and a message that names
   the service and lists the services that have a runbook. Also add `StoreOpenError extends Error`
   (not a DomainError) with constructor `(path: string, reason: string)` and a message naming the
   path and the reason, never file contents. Leave `StoreFileError` in place for now (it goes in
   T017).
-- [ ] T005 Update `src/store/seed-data.ts` (after T003):
+- [X] T005 Update `src/store/seed-data.ts` (after T003):
   - give every service its tier, keeping the array order: `checkout-api` 1, `payments-worker` 1,
     `auth-service` 1, `search-api` 2, `catalog-api` 2, `notification-service` 3;
   - keep `ALT-001` to `ALT-007` unchanged (4 firing, 3 resolved);
   - add `export const seedRunbooks: readonly Runbook[]` for `checkout-api`, `payments-worker`, and
     `auth-service` only. Each has a title and 3 to 5 ordered steps tied to its alerts: latency and
     pod restarts for checkout, queue backlog for payments, login error rate for auth.
-- [ ] T006 Create `src/store/ops-store.ts` (after T003 and T004):
+- [X] T006 Create `src/store/ops-store.ts` (after T003 and T004):
   - move `StoreState` here from `src/store/in-memory-store.ts` and add
     `runbooks: readonly Runbook[]`;
   - define `export interface OpsStore` exactly as in [contracts/ops-store.md](contracts/ops-store.md):
@@ -93,7 +93,7 @@ store on that interface. Every story depends on this phase.
     runbooks) for a known service without one.
 
   Re-export `StoreState` from `src/store/in-memory-store.ts` so existing imports keep working.
-- [ ] T007 Create the shared contract suite `src/store/ops-store-contract.ts` (after T005 and T006).
+- [X] T007 Create the shared contract suite `src/store/ops-store-contract.ts` (after T005 and T006).
   Use the name `ops-store-contract.ts`, not `*.test.ts`, so the runner does not pick it up alone.
   - Export `runOpsStoreContract(label: string, makeStore: (now: () => string) => OpsStore)`. It
     declares a `describe` block with one `it` per row of "Behaviour both stores share" in
@@ -104,7 +104,7 @@ store on that interface. Every story depends on this phase.
     `checkout-api, payments-worker, auth-service`.
   - Store the injection title `x'); DROP TABLE alerts;--` and assert it comes back verbatim.
   - Check that `reset()` gives a state deep-equal to `createInitialState()`.
-- [ ] T008 Rework `src/store/in-memory-store.ts` to implement `OpsStore` (after T007):
+- [X] T008 Rework `src/store/in-memory-store.ts` to implement `OpsStore` (after T007):
   - `createInitialState()` includes `seedRunbooks`;
   - `openIncident(state, input)` builds ids with `formatIncidentId` and sets
     `resolvedAt: null, summary: null`;
@@ -122,7 +122,7 @@ store on that interface. Every story depends on this phase.
   - `src/bench.test.ts` and `src/store/in-memory-store.test.ts`: the pure `resolveIncident` now
     takes `({ id }, now)`;
   - `src/store/json-file-store.ts`, if its types moved.
-- [ ] T009 In `src/store/in-memory-store.test.ts`, call
+- [X] T009 In `src/store/in-memory-store.test.ts`, call
   `runOpsStoreContract("memory", (now) => createStore({ now }))` and keep the existing
   pure-transition tests, adjusted for `now`, `resolvedAt`, and `summary` (after T008). Run
   `npm run typecheck && npm test`: all green.
@@ -143,7 +143,7 @@ incidents. It comes back with the same id and status, and the next id is `INC-00
 
 ### Tests for User Story 1
 
-- [ ] T010 [P] [US1] Create `src/store/sqlite-ops-store.test.ts` (it fails until T011–T014 exist):
+- [X] T010 [P] [US1] Create `src/store/sqlite-ops-store.test.ts` (it fails until T011–T014 exist):
   - **Contract**: `runOpsStoreContract("sqlite", (now) => new SqliteOpsStore(":memory:", { now }))`.
   - **CHECKs on `:memory:`**: run the exported `SCHEMA` on a raw `new DatabaseSync(":memory:")` and
     insert parent rows through prepared statements.
@@ -167,7 +167,7 @@ incidents. It comes back with the same id and status, and the next id is `INC-00
 
 ### Implementation for User Story 1
 
-- [ ] T011 [US1] In `src/store/sqlite-ops-store.ts`, write and export the constant `SCHEMA` (R5). It
+- [X] T011 [US1] In `src/store/sqlite-ops-store.ts`, write and export the constant `SCHEMA` (R5). It
   holds four `CREATE TABLE IF NOT EXISTS ... STRICT` statements with the constraints copied from
   [data-model.md](data-model.md):
   - `services(name TEXT PRIMARY KEY CHECK (length(name) > 0), tier INTEGER NOT NULL CHECK (tier IN (1, 2, 3)))`;
@@ -182,7 +182,7 @@ incidents. It comes back with the same id and status, and the next id is `INC-00
   - `runbooks(service TEXT PRIMARY KEY REFERENCES services(name), title TEXT NOT NULL CHECK (length(title) > 0), steps TEXT NOT NULL CHECK (json_valid(steps)))`.
 
   The CHECK value lists are literal text and are never built from the zod enums.
-- [ ] T012 [US1] Add the class `SqliteOpsStore implements OpsStore` to
+- [X] T012 [US1] Add the class `SqliteOpsStore implements OpsStore` to
   `src/store/sqlite-ops-store.ts` (after T011):
   - **Constructor** `(path: string, options?: { now?: () => string })`:
     - open `new DatabaseSync(path)` with no options;
@@ -198,7 +198,7 @@ incidents. It comes back with the same id and status, and the next id is `INC-00
   - **`close()`** on the class only.
 
   `exec` takes only constant text. Every value goes through `prepare` with `?` (FR-008).
-- [ ] T013 [US1] Add the reads to `src/store/sqlite-ops-store.ts` (after T012):
+- [X] T013 [US1] Add the reads to `src/store/sqlite-ops-store.ts` (after T012):
   - **Mappers**: the pure row mappers `toService`, `toAlert`, `toIncident`, and `toRunbook` map
     `fired_at` to `firedAt` and `resolved_at` to `resolvedAt`, `JSON.parse` the runbook `steps`,
     and parse each result with the domain zod schema.
@@ -212,7 +212,7 @@ incidents. It comes back with the same id and status, and the next id is `INC-00
     - `getRunbook(service)`, through `runbookFor` on the loaded services and runbooks;
     - `getState()`, with `nextIncidentNumber` from
       `SELECT COALESCE(MAX(CAST(substr(id, 5) AS INTEGER)), 0) + 1 FROM incidents`.
-- [ ] T014 [US1] Add the writes to `src/store/sqlite-ops-store.ts` (after T013):
+- [X] T014 [US1] Add the writes to `src/store/sqlite-ops-store.ts` (after T013):
   - **`openIncident(input)`**: inside `transaction`, throw `ServiceNotFoundError` (with the known
     services in `rowid` order) when the service is missing. Otherwise compute
     `MAX + 1`, `formatIncidentId(n)`, and insert with `status 'open'` and null
@@ -224,7 +224,7 @@ incidents. It comes back with the same id and status, and the next id is `INC-00
       `summary = summary ?? null`, then return the mapped row.
   - **`reset()`**: inside `transaction`, delete from incidents, runbooks, alerts, then services,
     and reseed.
-- [ ] T015 [US1] Add the construction helpers to `src/store/sqlite-ops-store.ts` (after T012):
+- [X] T015 [US1] Add the construction helpers to `src/store/sqlite-ops-store.ts` (after T012):
   - the pure `resolveDbPath(env: NodeJS.ProcessEnv): string`. It parses `env.OPSPILOT_DB` with
     `z.string().trim().min(1).optional().catch(undefined)` (Principle II) and returns the parsed
     value, or `./data/opspilot.db` when it is unset, empty, or blank;
@@ -235,7 +235,7 @@ incidents. It comes back with the same id and status, and the next id is `INC-00
     also gives `StoreOpenError`.
 
   Then run `npm test`: T010 is green.
-- [ ] T016 [US1] Rewire the entry points (after T015):
+- [X] T016 [US1] Rewire the entry points (after T015):
   - **`src/index.ts`**: open the store once at startup with `openOpsStore()`. Catch
     `StoreOpenError`, print its message with `console.error`, and `process.exit(1)`.
     `createDependencies` reuses that one store with `createTools(store)` (R10).
@@ -246,7 +246,7 @@ incidents. It comes back with the same id and status, and the next id is `INC-00
     top-of-file comment saying it wipes incidents and restores seeded records. Catch
     `StoreOpenError` as `index.ts` does (`console.error` and `process.exit(1)`), so a bad path
     never prints a raw stack trace.
-- [ ] T017 [US1] Retire the JSON store (after T016):
+- [X] T017 [US1] Retire the JSON store (after T016):
   - delete `src/store/json-file-store.ts` and `src/store/json-file-store.test.ts`;
   - remove `StoreFileError` from `src/domain/errors.ts`;
   - remove `StoreBackend`, `createMemoryBackend`, and the `backend` option from
@@ -272,7 +272,7 @@ status, with `resolved`, and with `all`. The counts are 2, 1, and 3.
 
 ### Tests for User Story 2
 
-- [ ] T018 [P] [US2] Add a `describe("list_incidents")` block to `src/agents/tools.test.ts` on
+- [X] T018 [P] [US2] Add a `describe("list_incidents")` block to `src/agents/tools.test.ts` on
   `new SqliteOpsStore(":memory:")`. Destructure `[, openIncident, resolveIncident, listIncidents]`
   from `createTools(store)`.
   - Set up 2 open incidents and 1 resolved.
@@ -285,7 +285,7 @@ status, with `resolved`, and with `all`. The counts are 2, 1, and 3.
 
 ### Implementation for User Story 2
 
-- [ ] T019 [US2] Add the `list_incidents` tool to `src/agents/tools.ts`, with schema
+- [X] T019 [US2] Add the `list_incidents` tool to `src/agents/tools.ts`, with schema
   `ListIncidentsInput`. It calls `toToolText(() => store.listIncidents(status))` and is appended at
   index 3 of the returned tuple. Its description follows the six rules, using the `list_incidents`
   row of [contracts/agent-tools.md](contracts/agent-tools.md):
@@ -311,7 +311,7 @@ returns text naming the services that have runbooks.
 
 ### Tests for User Story 3
 
-- [ ] T020 [P] [US3] Add a `describe("get_runbook")` block to `src/agents/tools.test.ts` on
+- [X] T020 [P] [US3] Add a `describe("get_runbook")` block to `src/agents/tools.test.ts` on
   `new SqliteOpsStore(":memory:")`, taking tuple index 4.
   - `checkout-api`, `payments-worker`, and `auth-service` each return a title and a non-empty
     `steps` array.
@@ -321,7 +321,7 @@ returns text naming the services that have runbooks.
 
 ### Implementation for User Story 3
 
-- [ ] T021 [US3] Add the `get_runbook` tool to `src/agents/tools.ts`, with schema `GetRunbookInput`.
+- [X] T021 [US3] Add the `get_runbook` tool to `src/agents/tools.ts`, with schema `GetRunbookInput`.
   It calls `toToolText(() => store.getRunbook(service))` and is appended at index 4. Its
   description follows the six rules, using the `get_runbook` row of
   [contracts/agent-tools.md](contracts/agent-tools.md):
@@ -346,7 +346,7 @@ test.
 
 ### Tests for User Story 4
 
-- [ ] T022 [P] [US4] Add a `describe("tool definitions")` block to `src/agents/tools.test.ts`:
+- [X] T022 [P] [US4] Add a `describe("tool definitions")` block to `src/agents/tools.test.ts`:
   - the tool names are exactly
     `["list_alerts", "open_incident", "resolve_incident", "list_incidents", "get_runbook"]`, in
     that order;
@@ -362,14 +362,14 @@ test.
 
 ### Implementation for User Story 4
 
-- [ ] T023 [US4] In `src/domain/schemas.ts`, add `.describe()` to every existing input field:
+- [X] T023 [US4] In `src/domain/schemas.ts`, add `.describe()` to every existing input field:
   - `ListAlertsInput.status`: `firing | resolved | all`, default `firing`;
   - `OpenIncidentInput.title`: short summary;
   - `OpenIncidentInput.service`: the exact name from `list_alerts`;
   - `OpenIncidentInput.severity`: name the values and the mapping sev1 `critical`, sev2 `high`,
     sev3 `medium`, sev4 `low`;
   - `ResolveIncidentInput.id`: `INC-NNN` from `list_incidents`.
-- [ ] T024 [US4] In `src/agents/tools.ts`, rewrite the `list_alerts`, `open_incident`, and
+- [X] T024 [US4] In `src/agents/tools.ts`, rewrite the `list_alerts`, `open_incident`, and
   `resolve_incident` descriptions to the six rules, following their rows in
   [contracts/agent-tools.md](contracts/agent-tools.md).
   - `open_incident` must say to use it only when an alert needs follow-up **and** `list_incidents`
@@ -390,13 +390,13 @@ and never touches `data/`.
 **Independent Test**: Run `npm test` and `npm run bench`. The `shasum` of `data/opspilot.db` is the
 same before and after.
 
-- [ ] T025 [US5] In `src/agents/tools.test.ts`, switch the existing cases (list alerts, open
+- [X] T025 [US5] In `src/agents/tools.test.ts`, switch the existing cases (list alerts, open
   incident, resolve, the unknown-service and already-resolved errors) from `createStore()` to
   `new SqliteOpsStore(":memory:")`, one per test, closed in `afterEach` (FR-014).
-- [ ] T026 [P] [US5] Check that `src/bench.ts` builds `createStore()` inside the per-run loop and
+- [X] T026 [P] [US5] Check that `src/bench.ts` builds `createStore()` inside the per-run loop and
   never imports `sqlite-ops-store` or `openOpsStore`. Change any `Store` type import to `OpsStore`.
   The judge's use of `getState()` must compile against the new `Incident` fields.
-- [ ] T027 [US5] Run `grep -rn "data/opspilot" src --include="*.test.ts"`. The only match should be
+- [X] T027 [US5] Run `grep -rn "data/opspilot" src --include="*.test.ts"`. The only match should be
   the expected value of the `resolveDbPath` default assertion in
   `src/store/sqlite-ops-store.test.ts`. Also check by reading that every `openOpsStore` call in
   tests passes an explicit env whose `OPSPILOT_DB` points inside the `mkdtemp` directory, never
@@ -410,14 +410,14 @@ same before and after.
 
 ## Phase 8: Polish & Cross-Cutting Concerns
 
-- [ ] T028 [P] Update `README.md`:
+- [X] T028 [P] Update `README.md`:
   - persistence is SQLite at `OPSPILOT_DB`, default `./data/opspilot.db`;
   - `npm run seed` resets the database to the seed and deletes every incident (destructive,
     FR-004a); opening the app only adds missing seed rows;
   - Node 22.13 or newer;
   - the tool list now has five tools;
   - remove every mention of `data/db.json` and the JSON store.
-- [ ] T029 [P] Amend `.specify/memory/constitution.md` to 1.3.1 (PATCH; the exception expired by
+- [X] T029 [P] Amend `.specify/memory/constitution.md` to 1.3.1 (PATCH; the exception expired by
   its own terms, so no rule changes):
   - remove the expired Stack Exception for the JSON file store, and the now-empty Stack Exceptions
     section;
@@ -426,10 +426,10 @@ same before and after.
     be reproducible." This restates existing text, so the bump stays PATCH;
   - set Last Amended to the implementation date;
   - replace the Sync Impact Report comment (1.3.0 to 1.3.1, the exception removed).
-- [ ] T030 [P] Audit SQL safety. In `src/store/sqlite-ops-store.ts`,
+- [X] T030 [P] Audit SQL safety. In `src/store/sqlite-ops-store.ts`,
   `grep -n '\${' src/store/sqlite-ops-store.ts` shows no interpolation inside SQL text, and
   `grep -rln "prepare(\|DatabaseSync" src` lists only files in `src/store/` (FR-008, Principle I).
-- [ ] T031 Run `npm run typecheck && npm test` (green). Then run [quickstart.md](quickstart.md)
+- [X] T031 Run `npm run typecheck && npm test` (green). Then run [quickstart.md](quickstart.md)
   steps 1 to 3; step 4 is covered by the restart test in `npm test`. Steps 5 and 6 call the live
   model and need the `.env` key, so the user runs them: step 5 is the manual check of SC-004 and
   step 6 the bench part of SC-005 (the agent never reads `.env` and does not spend tokens
