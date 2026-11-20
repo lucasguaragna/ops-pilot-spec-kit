@@ -235,7 +235,7 @@ to `list_alerts` and `list_incidents` for internal state, its `provider` is an e
   `get_runbook`, noting it queries the public GitHub and Cloudflare status pages and needs no key.
 - [X] T016 Run `npm run typecheck` and `npm test`; then run `npm test` again with the network off
   (for example Wi-Fi off) and confirm the same result (SC-005, [quickstart.md](quickstart.md)).
-- [ ] T017 Manual check from [quickstart.md](quickstart.md#manual-validation-live-model-and-network):
+- [X] T017 Manual check from [quickstart.md](quickstart.md#manual-validation-live-model-and-network):
   `npm run dev`, ask "GitHub Actions is failing for us. Is it GitHub or is it us?" and "is
   Cloudflare down?", and confirm one `check_provider_status` call each with the right provider
   and a one-line result (SC-001). Needs network and the OpenRouter key; skip if unavailable and
