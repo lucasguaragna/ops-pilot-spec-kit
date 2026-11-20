@@ -20,6 +20,7 @@ repository follows the course with Claude Code.
 - `npm run dev`: start the app
 - `npm run arena`: run `src/arena.ts`
 - `npm run bench`: run `src/bench.ts`
+- `npm run mcp`: start the `opspilot` MCP server over stdio
 - `npm test`: run the tests
 - `npm run typecheck`: type-check without emitting
 

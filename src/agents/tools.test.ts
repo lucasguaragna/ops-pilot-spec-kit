@@ -5,6 +5,7 @@ import { CheckProviderStatusInput } from "../domain/schemas.ts";
 import { STATUS_URLS, type FetchLike } from "../providers/provider-status.ts";
 import { createInitialState } from "../store/in-memory-store.ts";
 import { SqliteOpsStore } from "../store/sqlite-ops-store.ts";
+import { TOOL_DEFINITIONS } from "../tools/definitions.ts";
 import { createTools } from "./tools.ts";
 
 const opened: SqliteOpsStore[] = [];
@@ -28,6 +29,17 @@ describe("tools", () => {
       tools.map((item) => item.name),
       ["list_alerts", "open_incident", "resolve_incident", "list_incidents", "get_runbook", "check_provider_status"],
     );
+  });
+
+  it("takes name, description and schema from the shared definitions", () => {
+    const tools = createTools(new SqliteOpsStore(":memory:"));
+    assert.equal(tools.length, TOOL_DEFINITIONS.length);
+    tools.forEach((item, index) => {
+      const definition = TOOL_DEFINITIONS[index]!;
+      assert.equal(item.name, definition.name);
+      assert.equal(item.description, definition.description);
+      assert.strictEqual(item.schema, definition.schema);
+    });
   });
 
   it("list_alerts returns JSON text and defaults to firing", async () => {
