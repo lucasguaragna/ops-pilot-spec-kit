@@ -66,7 +66,7 @@ parameter on `createTools`, the tool-name test updated from five to six names
 | I. Layered MVC | Pass | `src/providers/provider-status.ts` is a Model-layer gateway beside `src/store/`. The tool in `src/agents/tools.ts` calls it; services and the controller are unchanged. |
 | II. Validated Boundaries | Pass | Tool input is the zod `CheckProviderStatusInput` (enum with default). The outside response is parsed with the zod `StatusPageBody` before use; anything else is an `invalid` failure. |
 | III. Domain Errors at the Edge | Pass, with a note | No domain error class is added: a failed status check is not a domain rule violation but an observation, and FR-007 forbids throwing. Failures are a typed union value, turned into `Error: ...` text only in the tool (the edge). See R4. |
-| IV. Pure Functions | Pass | `statusUrl`, `classifyResponse`, `classifyError`, `isRetryable`, `formatStatusLine`, and `formatFailure` are pure. `checkProviderStatus` is the only function with a side effect, and it takes `fetch` as a parameter. |
+| IV. Pure Functions | Pass | `classifyResponse`, `classifyError`, `isRetryable`, `formatStatusLine`, and `formatFailure` are pure. `checkProviderStatus` is the only function with a side effect, and it takes `fetch` as a parameter. |
 | V. Tested and Green | Pass | Unit tests for every pure function and for the loop with a fake fetch (success, timeout, invalid body, retry after 5xx, no retry on 4xx, unexpected throw), plus tool tests for the default provider and the schema rules. Typecheck and tests gate the work. |
 | Stack | Pass | Built-in `fetch` and `AbortSignal`; no new dependency. |
 | Persistence rules | N/A | No database access. |

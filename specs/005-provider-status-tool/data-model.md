@@ -41,6 +41,12 @@ Discriminated union on `kind`:
 
 The final result also carries `attempts: 1 | 2`, used in the failure text.
 
+## Attempt outcome (internal value)
+
+`Outcome` is what one attempt produces: `{ ok: true; indicator; description }` or
+`{ ok: false; failure }`. The loop turns it into the final result. The per-attempt timeout default
+is the exported constant `DEFAULT_TIMEOUT_MS` (5000).
+
 ## Check flow (state transitions)
 
 ```text

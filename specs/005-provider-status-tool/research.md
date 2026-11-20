@@ -40,6 +40,7 @@ need).
 | `network` | `fetch` rejected for any other reason (DNS, reset, TLS) | yes, once |
 | `http` 5xx | Server error | yes, once |
 | `http` 4xx | Client error, including 404 and 429 | no |
+| `http` other non-2xx (3xx) | A redirect that `fetch` did not follow | no |
 | `invalid` | 2xx but the body is not JSON or fails the schema | no |
 
 **Rationale**: 5xx and network failures are often brief; a 4xx or a bad body will repeat, so a

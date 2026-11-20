@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  DEFAULT_TIMEOUT_MS,
   STATUS_URLS,
   checkProviderStatus,
   classifyError,
@@ -159,6 +160,26 @@ describe("checkProviderStatus", () => {
     const result = await checkProviderStatus("github", { fetch: fake });
     assert.equal(result.ok, true);
     assert.equal(urls.length, 2);
+  });
+
+  it("uses the second answer when the first attempt times out", async () => {
+    const never = (signal: AbortSignal) =>
+      new Promise<Response>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+    const { fake, urls } = scripted(never, json(body("none", "ok")));
+    const result = await checkProviderStatus("github", { fetch: fake, timeoutMs: 20 });
+    assert.equal(result.ok, true);
+    assert.equal(urls.length, 2);
+  });
+
+  it("gives each attempt a 5 s budget by default", async () => {
+    assert.equal(DEFAULT_TIMEOUT_MS, 5000);
+    let signal: AbortSignal | undefined;
+    const fake: FetchLike = async (_url, init) => {
+      signal = init.signal;
+      return json(body("none", "ok"));
+    };
+    await checkProviderStatus("github", { fetch: fake });
+    assert.equal(signal?.aborted, false);
   });
 
   it("retries once after a network error and uses the second answer", async () => {

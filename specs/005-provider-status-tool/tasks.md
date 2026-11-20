@@ -178,8 +178,7 @@ retry table, and no exception escapes.
     gives `{ kind: "invalid" }`;
   - `classifyError(error: unknown)`: `name` `TimeoutError` or `AbortError` gives `timeout`,
     anything else `network`;
-  - `isRetryable(failure: Failure): boolean`, the R2 table. Left as `TODO(human)` for the
-    learner during `/speckit-implement`;
+  - `isRetryable(failure: Failure): boolean`, the R2 table;
   - `formatFailure(provider, failure, attempts)`: the contract's text, detail from the last
     attempt's failure, with `after 2 attempts` only when `attempts === 2`;
   - `checkProviderStatus`: a loop of at most two attempts. The whole attempt (the `fetch` call,
@@ -307,5 +306,5 @@ Task: "T010 tools.test.ts failure returns Error: text"
 
 ## Notes
 
-- `isRetryable` (T011) is the `TODO(human)` contribution in `/speckit-implement`.
+- `isRetryable` (T011) was written by the assistant at the user's request, following the R2 table.
 - No commit is part of these tasks; commit only when asked.
