@@ -1,6 +1,12 @@
 import type { RequestHandler } from "express";
-import { UnknownStrategyError } from "../domain/errors.ts";
-import { failureOf, toHttpReply, unknownStrategyReply, type HttpReply } from "./chat-reply.ts";
+import { ConversationNotFoundError, UnknownStrategyError } from "../domain/errors.ts";
+import {
+  conversationNotFoundReply,
+  failureOf,
+  toHttpReply,
+  unknownStrategyReply,
+  type HttpReply,
+} from "./chat-reply.ts";
 import { runChat } from "./chat-service.ts";
 import { ChatReply, ChatRequest, ErrorReply, toIssues } from "./schemas.ts";
 import type { ResolvedSettings } from "./server.ts";
@@ -25,8 +31,9 @@ export function postChat(settings: ResolvedSettings): RequestHandler {
         if (failure) console.error(`Run failed: ${failure.name}: ${failure.message}`);
         reply = toHttpReply(outcome);
       } catch (error) {
-        if (!(error instanceof UnknownStrategyError)) throw error;
-        reply = unknownStrategyReply(error);
+        if (error instanceof UnknownStrategyError) reply = unknownStrategyReply(error);
+        else if (error instanceof ConversationNotFoundError) reply = conversationNotFoundReply(error);
+        else throw error;
       }
       // A reply that fails its own schema is a bug: it throws and becomes a 500 (FR-010).
       const { status, body } = reply;

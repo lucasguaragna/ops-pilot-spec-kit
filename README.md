@@ -75,6 +75,7 @@ Each feature has a folder in `specs/` with its spec, plan, tasks and contracts.
 | SQLite store | Alerts, incidents and runbooks in `node:sqlite`, with prepared statements and a seed | `004-sqlite-ops-store` |
 | Provider status tool | `check_provider_status` reads the public GitHub or Cloudflare status page. It needs no key, retries once, times out after 5 s and never throws | `005-provider-status-tool` |
 | MCP server | `opspilot` server over stdio that exposes the incident tools to MCP clients | `006-mcp-server` |
+| Persistent conversation | `POST /chat` takes an optional `conversationId`. The last 12 messages go into the prompt, saved in the same SQLite file | `007-persistent-conversation` |
 
 ### Tools
 
@@ -186,6 +187,7 @@ Send `POST /chat` a JSON body, with the `content-type: application/json` header:
 | `message` | string | Required, not blank |
 | `reflect` | boolean | Required; `true` adds the critic |
 | `strategy` | string | Optional; `react` (default) or `plan-execute` |
+| `conversationId` | string (UUID) | Optional; continues that conversation. Without it a new one starts |
 
 ```sh
 curl -s localhost:3000/chat -H 'content-type: application/json' \
@@ -194,11 +196,24 @@ curl -s localhost:3000/chat -H 'content-type: application/json' \
 
 | Status | `error` | When |
 | --- | --- | --- |
-| 200 | none | The run finished: `{answer, stopReason, trace, metrics}`. `answer` is `null` at the iteration limit |
+| 200 | none | The run finished: `{conversationId, answer, stopReason, trace, metrics}`. `answer` is `null` at the iteration limit |
 | 400 | `invalid_body` | The body fails validation or is not JSON; `issues` lists the zod problems |
+| 404 | `conversation_not_found` | `conversationId` is a UUID but names no conversation. The agent does not run |
 | 422 | `unknown_strategy` | Unknown `strategy`; `knownStrategies` lists the valid names |
 | 502 | `run_failed` | The run returned an error or threw. The message is fixed; the real error is in the server log |
 | 504 | `timeout` | The run did not finish in 180 s and was cancelled |
+
+Every reply names its conversation in `conversationId`, and `metrics.historyMessages` says how many
+earlier messages (at most 12) the agent was given. To continue a conversation, send that id back:
+
+```sh
+curl -s localhost:3000/chat -H 'content-type: application/json' \
+  -d '{"message":"Open an incident for the worst one","reflect":false,"conversationId":"<id>"}'
+```
+
+Only a run that finishes with an answer is saved, so a failed or timed-out request leaves the
+history as it was and can be retried. Conversations live in the file at `OPSPILOT_DB` and survive a
+restart. The 502 and 504 replies also carry `conversationId`.
 
 The server validates every reply body against its schema before sending it.
 

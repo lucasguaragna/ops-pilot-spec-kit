@@ -105,3 +105,29 @@ export const GetRunbookInput = z.object({
     .min(1)
     .describe("The exact service name, as list_alerts shows it, for example checkout-api."),
 });
+
+/** Who wrote a message: the engineer (`user`) or the copilot (`assistant`). A closed set. */
+export const MessageRole = z.enum(["user", "assistant"]);
+export type MessageRole = z.infer<typeof MessageRole>;
+
+export const Conversation = z.object({
+  id: z.string().min(1),
+  /** ISO 8601 */
+  createdAt: z.string().min(1),
+});
+export type Conversation = z.infer<typeof Conversation>;
+
+/** What a caller appends. An answer may legitimately be an empty string, so there is no minimum length. */
+export const NewMessage = z.object({
+  role: MessageRole,
+  content: z.string(),
+});
+export type NewMessage = z.infer<typeof NewMessage>;
+
+export const StoredMessage = NewMessage.extend({
+  /** Sets the order of the messages inside a conversation. */
+  id: z.number().int(),
+  conversationId: z.string().min(1),
+  createdAt: z.string().min(1),
+});
+export type StoredMessage = z.infer<typeof StoredMessage>;

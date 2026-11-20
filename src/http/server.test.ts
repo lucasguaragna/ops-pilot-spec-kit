@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { after, describe, it } from "node:test";
+import { FakeConversationStore } from "../testing/fake-conversation-store.ts";
 import { ScriptedChatModel, toolCallTurn } from "../testing/scripted-chat-model.ts";
 import { VERDICT_TOOL_NAME } from "../agents/reflection.ts";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
@@ -52,7 +53,12 @@ function settingsFor(strategies: Record<string, ReasoningStrategy>, extra: Parti
   const registry: StrategyRegistry = Object.fromEntries(
     Object.entries(strategies).map(([name, strategy]) => [name, () => strategy]),
   );
-  return { registry, createDependencies: () => ({ model: {} as BaseChatModel, tools: [] }), ...extra };
+  return {
+    registry,
+    createDependencies: () => ({ model: {} as BaseChatModel, tools: [] }),
+    conversations: new FakeConversationStore(),
+    ...extra,
+  };
 }
 
 async function postChat(baseUrl: string, body: unknown): Promise<{ status: number; json: any }> {
@@ -75,7 +81,8 @@ describe("POST /chat: successful runs", () => {
     assert.equal(json.answer, "Two alerts are firing.");
     assert.equal(json.stopReason, "completed");
     assert.equal(json.trace.length, 3);
-    assert.deepEqual(json.metrics, { llmCalls: 2, latencyMs: 15 });
+    assert.deepEqual(json.metrics, { llmCalls: 2, latencyMs: 15, historyMessages: 0 });
+    assert.equal(typeof json.conversationId, "string");
     assert.equal(react.calls.length, 1);
     assert.equal(react.calls[0]?.input, "Which alerts are firing?");
   });
@@ -287,8 +294,127 @@ describe("POST /chat: run failures", () => {
     const { status, json } = await postChat(baseUrl, validBody);
 
     assert.equal(status, 504);
-    assert.deepEqual(json, { error: "timeout", message: "The run did not finish within 50 ms", timeoutMs: 50 });
+    assert.deepEqual(json, {
+      error: "timeout",
+      message: "The run did not finish within 50 ms",
+      timeoutMs: 50,
+      conversationId: json.conversationId,
+    });
+    assert.equal(typeof json.conversationId, "string");
     assert.equal(seen?.aborted, true);
     assert.ok(Date.now() - started < 50 + 1000);
+  });
+});
+
+describe("POST /chat: conversations", () => {
+  const unknownId = "3f0c1f6e-8d1e-4c43-9c8e-5f0a3b2d9a10";
+
+  it("starts a new conversation and reports no history", async () => {
+    const baseUrl = await startServer(settingsFor({ react: fakeStrategy("react", completed("first answer")) }));
+
+    const { status, json } = await postChat(baseUrl, validBody);
+
+    assert.equal(status, 200);
+    assert.match(json.conversationId, /^[0-9a-f-]{36}$/);
+    assert.equal(json.metrics.historyMessages, 0);
+  });
+
+  it("answers a follow-up with the same id, the earlier exchange in view, and two history messages", async () => {
+    const react = fakeStrategy("react", completed("ALT-001 is firing."));
+    const baseUrl = await startServer(settingsFor({ react }));
+    const first = await postChat(baseUrl, { message: "which alerts are firing on checkout?", reflect: false });
+
+    const second = await postChat(baseUrl, {
+      message: "open an incident for the worst one",
+      reflect: false,
+      conversationId: first.json.conversationId,
+    });
+
+    assert.equal(second.status, 200);
+    assert.equal(second.json.conversationId, first.json.conversationId);
+    assert.equal(second.json.metrics.historyMessages, 2);
+    const input = react.calls[1]?.input ?? "";
+    assert.ok(input.includes("User: which alerts are firing on checkout?"));
+    assert.ok(input.includes("Assistant: ALT-001 is firing."));
+    assert.ok(input.endsWith("open an incident for the worst one"));
+  });
+
+  it("replies 404 for an unknown conversation and does not run the agent", async () => {
+    const react = fakeStrategy("react", completed("ok"));
+    const store = new FakeConversationStore();
+    const baseUrl = await startServer(settingsFor({ react }, { conversations: store }));
+
+    const { status, json } = await postChat(baseUrl, { ...validBody, conversationId: unknownId });
+
+    assert.equal(status, 404);
+    assert.deepEqual(json, {
+      error: "conversation_not_found",
+      message: `Conversation not found: ${unknownId}`,
+      conversationId: unknownId,
+    });
+    assert.equal(react.calls.length, 0);
+    assert.throws(() => store.lastMessages(unknownId, 12));
+  });
+
+  it("replies 400 for a conversationId that is not a UUID", async () => {
+    const react = fakeStrategy("react", completed("ok"));
+    const baseUrl = await startServer(settingsFor({ react }));
+
+    const { status, json } = await postChat(baseUrl, { ...validBody, conversationId: "abc" });
+
+    assert.equal(status, 400);
+    assert.equal(json.error, "invalid_body");
+    assert.deepEqual(json.issues.map((issue: { path: unknown[] }) => issue.path), [["conversationId"]]);
+    assert.equal(react.calls.length, 0);
+  });
+
+  it("names the new conversation in a 502 and saves nothing in it", async () => {
+    const failing = fakeStrategy("react", async () => {
+      throw new Error("kaboom");
+    });
+    const store = new FakeConversationStore();
+    const baseUrl = await startServer(settingsFor({ react: failing }, { conversations: store }));
+
+    const { status, json } = await postChat(baseUrl, validBody);
+
+    assert.equal(status, 502);
+    assert.equal(typeof json.conversationId, "string");
+    assert.deepEqual(store.lastMessages(json.conversationId, 12), []);
+  });
+
+  it("continues a conversation with a different strategy", async () => {
+    const react = fakeStrategy("react", completed("from react"));
+    const planExecute = fakeStrategy("plan-execute", completed("from plan"));
+    const baseUrl = await startServer(settingsFor({ react, "plan-execute": planExecute }));
+    const first = await postChat(baseUrl, validBody);
+
+    const second = await postChat(baseUrl, {
+      message: "again",
+      reflect: false,
+      strategy: "plan-execute",
+      conversationId: first.json.conversationId,
+    });
+
+    assert.equal(second.json.metrics.historyMessages, 2);
+    assert.ok((planExecute.calls[0]?.input ?? "").includes("Assistant: from react"));
+  });
+
+  it("creates no conversation for an unknown strategy", async () => {
+    const created: string[] = [];
+    class CountingStore extends FakeConversationStore {
+      override create() {
+        const conversation = super.create();
+        created.push(conversation.id);
+        return conversation;
+      }
+    }
+    const baseUrl = await startServer(
+      settingsFor({ react: fakeStrategy("react", completed("ok")) }, { conversations: new CountingStore() }),
+    );
+
+    const { status } = await postChat(baseUrl, { ...validBody, strategy: "nope" });
+
+    assert.equal(status, 422);
+    assert.deepEqual(created, []);
   });
 });

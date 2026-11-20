@@ -1,6 +1,8 @@
 import express, { type ErrorRequestHandler } from "express";
 import type { StrategyDependencies } from "../agents/react.ts";
+import { HISTORY_LIMIT } from "../agents/history.ts";
 import type { StrategyRegistry } from "../agents/index.ts";
+import type { ConversationStore } from "../store/conversation-store.ts";
 import { postChat } from "./chat-controller.ts";
 
 export const DEFAULT_TIMEOUT_MS = 180_000;
@@ -10,8 +12,12 @@ export interface AppSettings {
   registry: StrategyRegistry;
   /** Builds the model and tools for one request. */
   createDependencies: () => StrategyDependencies;
+  /** Required, so production can never fall back to a test double. */
+  conversations: ConversationStore;
   timeoutMs?: number;
   maxIterations?: number;
+  /** How many earlier messages reach the agent. */
+  historyLimit?: number;
 }
 
 /** The settings with every default filled in. */
@@ -21,6 +27,7 @@ export function resolveSettings(settings: AppSettings): ResolvedSettings {
   return {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     maxIterations: DEFAULT_MAX_ITERATIONS,
+    historyLimit: HISTORY_LIMIT,
     ...settings,
   };
 }

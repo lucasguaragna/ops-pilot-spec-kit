@@ -17,8 +17,12 @@
       "_type": "environment",
       "parentId": "wrk_opspilot",
       "name": "Base Environment",
-      "data": { "base_url": "http://127.0.0.1:3000" },
-      "dataPropertyOrder": { "&": ["base_url"] },
+      "data": {
+        "base_url": "http://127.0.0.1:3000",
+        "conversation_id": "",
+        "unknown_conversation_id": "3f0c1f6e-8d1e-4c43-9c8e-5f0a3b2d9a10"
+      },
+      "dataPropertyOrder": { "&": ["base_url", "conversation_id", "unknown_conversation_id"] },
       "isPrivate": false,
       "metaSortKey": 1
     },
@@ -169,6 +173,51 @@
       "body": {},
       "headers": [],
       "metaSortKey": 6
+    },
+    {
+      "_id": "req_follow_up",
+      "_type": "request",
+      "parentId": "fld_opspilot_success",
+      "name": "Follow-up in a conversation (react)",
+      "description": "Send the first request with no conversationId, copy conversationId from the reply into the conversation_id variable of the Base Environment, then send this one. Expect 200, the same conversationId, and metrics.historyMessages 2 (4 after the next one). The conversation survives a server restart.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/chat",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"message\": \"Open an incident for the worst one\",\n  \"reflect\": false,\n  \"conversationId\": \"{{ _.conversation_id }}\"\n}"
+      },
+      "headers": [{ "name": "Content-Type", "value": "application/json" }],
+      "metaSortKey": 4
+    },
+    {
+      "_id": "req_bad_conversation_id",
+      "_type": "request",
+      "parentId": "fld_opspilot_errors",
+      "name": "400 - conversationId is not a UUID",
+      "description": "The id must be a UUID. Expect 400 invalid_body with an issue on the path conversationId. Nothing ran.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/chat",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"message\": \"hi\",\n  \"reflect\": false,\n  \"conversationId\": \"abc\"\n}"
+      },
+      "headers": [{ "name": "Content-Type", "value": "application/json" }],
+      "metaSortKey": 7
+    },
+    {
+      "_id": "req_unknown_conversation",
+      "_type": "request",
+      "parentId": "fld_opspilot_errors",
+      "name": "404 - unknown conversation",
+      "description": "A well-formed UUID that names no conversation. Expect 404 conversation_not_found with conversationId. The agent does not run and no conversation is created.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/chat",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"message\": \"hi\",\n  \"reflect\": false,\n  \"conversationId\": \"{{ _.unknown_conversation_id }}\"\n}"
+      },
+      "headers": [{ "name": "Content-Type", "value": "application/json" }],
+      "metaSortKey": 8
     }
   ]
 }

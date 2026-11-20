@@ -4,6 +4,7 @@ import { createModel } from "./agents/model.ts";
 import { createTools } from "./agents/tools.ts";
 import { createApp } from "./http/server.ts";
 import { StoreOpenError } from "./domain/errors.ts";
+import { openConversationStore } from "./store/sqlite-conversation-store.ts";
 import { openOpsStore } from "./store/sqlite-ops-store.ts";
 
 const Port = z.coerce.number().int().positive().default(3000);
@@ -21,8 +22,10 @@ const host = process.env.HOST?.trim() || "127.0.0.1";
 
 // One connection for the whole process; every request shares it.
 let store;
+let conversations;
 try {
   store = openOpsStore();
+  conversations = openConversationStore();
 } catch (error) {
   if (!(error instanceof StoreOpenError)) throw error;
   console.error(error.message);
@@ -32,6 +35,7 @@ try {
 const model = createModel();
 const app = createApp({
   registry: strategyFactories,
+  conversations,
   createDependencies: () => ({
     model,
     tools: [...createTools(store)],

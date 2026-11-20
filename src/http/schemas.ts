@@ -5,6 +5,8 @@ export const ChatRequest = z.object({
   // Any string passes here; the registry decides whether the name exists (422, not 400).
   strategy: z.string().default("react"),
   reflect: z.boolean(),
+  /** Continues an existing conversation; without it a new one starts. A malformed id is a 400. */
+  conversationId: z.uuid().optional(),
 });
 export type ChatRequest = z.infer<typeof ChatRequest>;
 
@@ -24,9 +26,15 @@ export const TraceEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("answer"), content: z.string() }),
 ]);
 
-export const MetricsSchema = z.object({ llmCalls: Count, latencyMs: Count });
+export const MetricsSchema = z.object({
+  llmCalls: Count,
+  latencyMs: Count,
+  /** How many earlier messages the agent was given. HTTP-only: the domain Metrics type does not have it. */
+  historyMessages: Count,
+});
 
 export const ChatReply = z.object({
+  conversationId: z.string().min(1),
   answer: z.string().nullable(),
   stopReason: z.enum(["completed", "iteration_limit"]),
   trace: z.array(TraceEventSchema),
@@ -49,10 +57,17 @@ export const ErrorReply = z.discriminatedUnion("error", [
     error: z.literal("run_failed"),
     message: z.string(),
     runError: z.object({ name: z.string(), message: z.string() }),
+    conversationId: z.string().min(1),
     trace: z.array(TraceEventSchema).optional(),
     metrics: MetricsSchema.optional(),
   }),
-  z.object({ error: z.literal("timeout"), message: z.string(), timeoutMs: z.number() }),
+  z.object({
+    error: z.literal("timeout"),
+    message: z.string(),
+    timeoutMs: z.number(),
+    conversationId: z.string().min(1),
+  }),
+  z.object({ error: z.literal("conversation_not_found"), message: z.string(), conversationId: z.string() }),
   z.object({ error: z.literal("internal"), message: z.string() }),
 ]);
 export type ErrorReply = z.infer<typeof ErrorReply>;

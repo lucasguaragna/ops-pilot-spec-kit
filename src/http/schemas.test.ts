@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ChatRequest, toIssues } from "./schemas.ts";
+import { ChatReply, ChatRequest, ErrorReply, toIssues } from "./schemas.ts";
 
 describe("ChatRequest", () => {
   it("accepts a minimal body and defaults the strategy to react", () => {
@@ -38,5 +38,50 @@ describe("toIssues", () => {
     const issues = toIssues(parsed.error);
     assert.deepEqual(issues.map((issue) => issue.path), [["message"], ["reflect"]]);
     for (const issue of issues) assert.equal(typeof issue.message, "string");
+  });
+});
+
+describe("ChatRequest: conversationId", () => {
+  const uuid = "3f0c1f6e-8d1e-4c43-9c8e-5f0a3b2d9a10";
+
+  it("accepts a missing conversationId and a UUID", () => {
+    assert.equal(ChatRequest.parse({ message: "hi", reflect: false }).conversationId, undefined);
+    assert.equal(ChatRequest.parse({ message: "hi", reflect: false, conversationId: uuid }).conversationId, uuid);
+  });
+
+  it("rejects an id that is not a UUID, with the issue on conversationId", () => {
+    for (const conversationId of ["abc", "", 42]) {
+      const parsed = ChatRequest.safeParse({ message: "hi", reflect: false, conversationId });
+      assert.ok(!parsed.success);
+      assert.deepEqual(toIssues(parsed.error).map((issue) => issue.path), [["conversationId"]]);
+    }
+  });
+});
+
+describe("reply schemas: conversation fields", () => {
+  const id = "3f0c1f6e-8d1e-4c43-9c8e-5f0a3b2d9a10";
+  const metrics = { llmCalls: 1, latencyMs: 2, historyMessages: 0 };
+
+  it("requires conversationId and historyMessages on a 200", () => {
+    const reply = { answer: "ok", stopReason: "completed", trace: [], metrics, conversationId: id };
+    assert.ok(ChatReply.safeParse(reply).success);
+    assert.equal(ChatReply.safeParse({ ...reply, conversationId: undefined }).success, false);
+    assert.equal(ChatReply.safeParse({ ...reply, metrics: { llmCalls: 1, latencyMs: 2 } }).success, false);
+  });
+
+  it("requires conversationId on run_failed and timeout", () => {
+    const failed = { error: "run_failed", message: "m", runError: { name: "Error", message: "m" } };
+    assert.equal(ErrorReply.safeParse(failed).success, false);
+    assert.ok(ErrorReply.safeParse({ ...failed, conversationId: id }).success);
+    const timeout = { error: "timeout", message: "m", timeoutMs: 5 };
+    assert.equal(ErrorReply.safeParse(timeout).success, false);
+    assert.ok(ErrorReply.safeParse({ ...timeout, conversationId: id }).success);
+  });
+
+  it("accepts the 404 conversation_not_found shape", () => {
+    assert.ok(
+      ErrorReply.safeParse({ error: "conversation_not_found", message: `Conversation not found: ${id}`, conversationId: id })
+        .success,
+    );
   });
 });

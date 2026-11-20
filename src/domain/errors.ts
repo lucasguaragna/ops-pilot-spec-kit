@@ -67,3 +67,11 @@ export class UnknownStrategyError extends Error {
     this.name = "UnknownStrategyError";
   }
 }
+
+/** A request named a conversation the store does not have. Not a DomainError: the model never sees it. */
+export class ConversationNotFoundError extends Error {
+  constructor(readonly conversationId: string) {
+    super(`Conversation not found: ${conversationId}`);
+    this.name = "ConversationNotFoundError";
+  }
+}
