@@ -87,6 +87,17 @@ export const ListIncidentsInput = z.object({
   ),
 });
 
+export const Provider = z.enum(["github", "cloudflare"]);
+export type Provider = z.infer<typeof Provider>;
+
+export const CheckProviderStatusInput = z.object({
+  provider: Provider.default("github").describe(
+    "Which external provider to check: github (GitHub, including Actions, git pushes and webhooks) " +
+      "or cloudflare (CDN, DNS and edge). Defaults to github.",
+  ),
+});
+export type CheckProviderStatusInput = z.infer<typeof CheckProviderStatusInput>;
+
 export const GetRunbookInput = z.object({
   service: z
     .string()

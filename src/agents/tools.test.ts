@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { z } from "zod";
+import { CheckProviderStatusInput } from "../domain/schemas.ts";
+import { STATUS_URLS, type FetchLike } from "../providers/provider-status.ts";
 import { createInitialState } from "../store/in-memory-store.ts";
 import { SqliteOpsStore } from "../store/sqlite-ops-store.ts";
 import { createTools } from "./tools.ts";
@@ -24,7 +26,7 @@ describe("tools", () => {
     const tools = createTools(new SqliteOpsStore(":memory:"));
     assert.deepEqual(
       tools.map((item) => item.name),
-      ["list_alerts", "open_incident", "resolve_incident", "list_incidents", "get_runbook"],
+      ["list_alerts", "open_incident", "resolve_incident", "list_incidents", "get_runbook", "check_provider_status"],
     );
   });
 
@@ -134,6 +136,53 @@ describe("get_runbook", () => {
   });
 });
 
+describe("check_provider_status", () => {
+  function withFetch(fake: FetchLike) {
+    const store = new SqliteOpsStore(":memory:");
+    opened.push(store);
+    const tools = createTools(store, { fetch: fake, timeoutMs: 20 });
+    return tools[5];
+  }
+
+  it("checks github by default and returns one line", async () => {
+    const urls: string[] = [];
+    const check = withFetch(async (url) => {
+      urls.push(url);
+      return new Response(JSON.stringify({ status: { indicator: "minor", description: "Partial System Outage" } }));
+    });
+    assert.equal(await check.invoke({}), "github: minor - Partial System Outage");
+    assert.deepEqual(urls, [STATUS_URLS.github]);
+  });
+
+  it("checks cloudflare when asked", async () => {
+    const urls: string[] = [];
+    const check = withFetch(async (url) => {
+      urls.push(url);
+      return new Response(JSON.stringify({ status: { indicator: "none", description: "All Systems Operational" } }));
+    });
+    assert.equal(await check.invoke({ provider: "cloudflare" }), "cloudflare: none - All Systems Operational");
+    assert.deepEqual(urls, [STATUS_URLS.cloudflare]);
+  });
+
+  it("rejects a provider outside the set before any request", async () => {
+    let calls = 0;
+    const check = withFetch(async () => {
+      calls += 1;
+      return new Response("{}");
+    });
+    await assert.rejects(() => check.invoke({ provider: "aws" as "github" }));
+    assert.equal(calls, 0);
+  });
+
+  it("returns an Error: text instead of throwing", async () => {
+    const check = withFetch(async () => {
+      throw new TypeError("fetch failed");
+    });
+    const text = await check.invoke({});
+    assert.ok(text.startsWith("Error: github status check failed (network error after 2 attempts)"));
+  });
+});
+
 describe("tool definitions", () => {
   const tools = createTools(new SqliteOpsStore(":memory:"));
   const byName = Object.fromEntries(tools.map((item) => [item.name, item]));
@@ -158,10 +207,10 @@ describe("tool definitions", () => {
     }
   });
 
-  it("uses enums for every status and severity", () => {
+  it("uses enums for every status, severity and provider", () => {
     for (const item of tools) {
       const shape = (item.schema as z.ZodObject).shape as Record<string, z.ZodType>;
-      for (const key of ["status", "severity"]) {
+      for (const key of ["status", "severity", "provider"]) {
         const field = shape[key];
         if (field) assert.ok(base(field) instanceof z.ZodEnum, `${item.name}.${key} is not an enum`);
       }
@@ -170,6 +219,14 @@ describe("tool definitions", () => {
 
   it("tells the model when to use open_incident and to check list_incidents first", () => {
     assert.ok(byName.open_incident?.description.includes("list_incidents"));
+  });
+
+  it("tells the model when to use check_provider_status and what it returns", () => {
+    const text = byName.check_provider_status?.description ?? "";
+    for (const part of ["list_alerts", "list_incidents", "Error:", "none", "is it ours"]) {
+      assert.ok(text.includes(part), `description lacks "${part}"`);
+    }
+    assert.equal(CheckProviderStatusInput.parse({}).provider, "github");
   });
 
   it("says how to identify records", () => {

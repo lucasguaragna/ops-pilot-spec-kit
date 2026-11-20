@@ -14,6 +14,8 @@ agents inside VS Code, with Claude Code instead of GitHub Copilot.
 - **Tools.** `list_alerts`, `open_incident`, `resolve_incident`, `list_incidents`, and
   `get_runbook`, backed by a SQLite store (`node:sqlite`) at `OPSPILOT_DB`, default
   `./data/opspilot.db`. Tests use an in-memory database. Spec: `specs/004-sqlite-ops-store`.
+  `check_provider_status` reads the public GitHub or Cloudflare status page (no key, one retry,
+  5 s timeout, never throws). Spec: `specs/005-provider-status-tool`.
 - **Strategy registry.** `src/agents/index.ts` maps a name to a strategy and applies reflection on
   request. The HTTP endpoint and the arena both use it.
 - **Arena and bench.** `arena` compares strategies on one request; `bench` scores them on three

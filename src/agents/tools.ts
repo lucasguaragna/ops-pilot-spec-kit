@@ -1,12 +1,19 @@
 import { tool } from "@langchain/core/tools";
 import { DomainError } from "../domain/errors.ts";
 import {
+  CheckProviderStatusInput,
   GetRunbookInput,
   ListAlertsInput,
   ListIncidentsInput,
   OpenIncidentInput,
   ResolveIncidentInput,
 } from "../domain/schemas.ts";
+import {
+  checkProviderStatus,
+  formatFailure,
+  formatStatusLine,
+  type CheckDeps,
+} from "../providers/provider-status.ts";
 import type { OpsStore } from "../store/ops-store.ts";
 
 /** Domain errors go back to the model as text, so it can react and the run continues. */
@@ -19,7 +26,8 @@ function toToolText(action: () => unknown): string {
   }
 }
 
-export function createTools(store: OpsStore) {
+/** `deps` lets tests replace `fetch` and the per-attempt timeout; entry points omit it. */
+export function createTools(store: OpsStore, deps: CheckDeps = {}) {
   const listAlerts = tool(async ({ status }) => toToolText(() => store.listAlerts(status)), {
     name: "list_alerts",
     description:
@@ -72,5 +80,26 @@ export function createTools(store: OpsStore) {
     schema: GetRunbookInput,
   });
 
-  return [listAlerts, openIncident, resolveIncident, listIncidents, getRunbook] as const;
+  // Not wrapped in toToolText: that helper re-throws non-domain errors, and this tool must never throw.
+  const checkProviderStatusTool = tool(
+    async ({ provider }) => {
+      const result = await checkProviderStatus(provider, deps);
+      return result.ok ? formatStatusLine(result.status) : formatFailure(provider, result.failure, result.attempts);
+    },
+    {
+      name: "check_provider_status",
+      description:
+        "Check the public status page of an external provider the team depends on (github or " +
+        "cloudflare). Use when an outside cause is suspected: GitHub Actions, git pushes or webhooks " +
+        "failing; CDN, DNS or edge errors; the engineer asks 'is it ours or the provider's?'; or a " +
+        "dependency looks down. Not for internal services: use list_alerts and list_incidents for " +
+        "those. provider defaults to github. Returns one line '<provider>: <indicator> - " +
+        "<description>'; indicator none means operational, minor, major and critical mean degraded " +
+        "to down. Returns 'Error: ...' when the status page cannot be reached or understood; then " +
+        "the provider status is unknown.",
+      schema: CheckProviderStatusInput,
+    },
+  );
+
+  return [listAlerts, openIncident, resolveIncident, listIncidents, getRunbook, checkProviderStatusTool] as const;
 }
