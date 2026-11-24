@@ -17,10 +17,10 @@ import { ChatReply, ErrorReply } from "./schemas.ts";
 const metrics = { llmCalls: 2, latencyMs: 10 };
 const trace: RunResult["trace"] = [{ type: "answer", content: "done" }];
 const conversation = { id: "conv-1", historyMessages: 4 };
-const withHistory = { ...metrics, historyMessages: 4 };
+const withHistory = { ...metrics, historyMessages: 4, recalledMemories: 2 };
 
-/** Attaches the conversation every outcome carries once the service has resolved it. */
-const chat = (run: RunOutcome): ChatOutcome => ({ ...run, conversation });
+/** Attaches the conversation and the recall count every outcome carries once the service has resolved them. */
+const chat = (run: RunOutcome): ChatOutcome => ({ ...run, conversation, recalledMemories: 2 });
 
 describe("toHttpReply", () => {
   it("maps a completed result to 200 with the answer, trace, and metrics", () => {

@@ -2,6 +2,7 @@ import express, { type ErrorRequestHandler } from "express";
 import type { StrategyDependencies } from "../agents/react.ts";
 import { HISTORY_LIMIT } from "../agents/history.ts";
 import type { StrategyRegistry } from "../agents/index.ts";
+import type { MemoryStore } from "../memory/memory-store.ts";
 import type { ConversationStore } from "../store/conversation-store.ts";
 import { postChat } from "./chat-controller.ts";
 
@@ -14,6 +15,8 @@ export interface AppSettings {
   createDependencies: () => StrategyDependencies;
   /** Required, so production can never fall back to a test double. */
   conversations: ConversationStore;
+  /** Required, so production can never fall back to a test double. */
+  memories: MemoryStore;
   timeoutMs?: number;
   maxIterations?: number;
   /** How many earlier messages reach the agent. */

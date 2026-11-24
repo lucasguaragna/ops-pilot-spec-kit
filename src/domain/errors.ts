@@ -68,6 +68,25 @@ export class UnknownStrategyError extends Error {
   }
 }
 
+/** The user has no memory with this id. The model sees it as text and can tell the engineer. */
+export class MemoryNotFoundError extends DomainError {
+  constructor(readonly memoryId: number) {
+    super(`Memory not found: ${memoryId}`);
+    this.name = "MemoryNotFoundError";
+  }
+}
+
+/**
+ * The embedding model could not load or could not embed a text. Not a DomainError: the model never
+ * sees it, and the request fails instead of answering without the user's memories.
+ */
+export class EmbeddingError extends Error {
+  constructor(reason: string) {
+    super(`Embedding failed: ${reason}`);
+    this.name = "EmbeddingError";
+  }
+}
+
 /** A request named a conversation the store does not have. Not a DomainError: the model never sees it. */
 export class ConversationNotFoundError extends Error {
   constructor(readonly conversationId: string) {

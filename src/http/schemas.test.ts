@@ -60,7 +60,7 @@ describe("ChatRequest: conversationId", () => {
 
 describe("reply schemas: conversation fields", () => {
   const id = "3f0c1f6e-8d1e-4c43-9c8e-5f0a3b2d9a10";
-  const metrics = { llmCalls: 1, latencyMs: 2, historyMessages: 0 };
+  const metrics = { llmCalls: 1, latencyMs: 2, historyMessages: 0, recalledMemories: 0 };
 
   it("requires conversationId and historyMessages on a 200", () => {
     const reply = { answer: "ok", stopReason: "completed", trace: [], metrics, conversationId: id };
@@ -83,5 +83,38 @@ describe("reply schemas: conversation fields", () => {
       ErrorReply.safeParse({ error: "conversation_not_found", message: `Conversation not found: ${id}`, conversationId: id })
         .success,
     );
+  });
+});
+
+describe("ChatRequest: userId", () => {
+  const body = { message: "hi", reflect: false };
+
+  it("is optional and trimmed", () => {
+    assert.equal(ChatRequest.parse(body).userId, undefined);
+    assert.equal(ChatRequest.parse({ ...body, userId: " oncall-a " }).userId, "oncall-a");
+  });
+
+  it("rejects an empty, a blank, a 129-character, and a non-string user id", () => {
+    for (const userId of ["", "   ", "x".repeat(129), 42]) {
+      const parsed = ChatRequest.safeParse({ ...body, userId });
+      assert.equal(parsed.success, false, `accepted ${JSON.stringify(userId)}`);
+      assert.deepEqual(toIssues(parsed.error!).map((issue) => issue.path), [["userId"]]);
+    }
+  });
+});
+
+describe("reply schemas: recalledMemories", () => {
+  it("is required on a 200 and must be a non-negative integer", () => {
+    const reply = {
+      conversationId: "3f0c1f6e-8d1e-4c43-9c8e-5f0a3b2d9a10",
+      answer: "ok",
+      stopReason: "completed",
+      trace: [],
+      metrics: { llmCalls: 1, latencyMs: 2, historyMessages: 0, recalledMemories: 3 },
+    };
+    assert.ok(ChatReply.safeParse(reply).success);
+    for (const recalledMemories of [undefined, -1, 1.5]) {
+      assert.equal(ChatReply.safeParse({ ...reply, metrics: { ...reply.metrics, recalledMemories } }).success, false);
+    }
   });
 });

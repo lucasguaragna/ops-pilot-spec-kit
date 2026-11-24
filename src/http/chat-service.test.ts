@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { ConversationNotFoundError, UnknownStrategyError } from "../domain/errors.ts";
+import { ConversationNotFoundError, EmbeddingError, UnknownStrategyError } from "../domain/errors.ts";
 import type { NewMessage } from "../domain/schemas.ts";
 import type { ReasoningStrategy, RunResult } from "../domain/types.ts";
 import { FakeConversationStore } from "../testing/fake-conversation-store.ts";
+import { composeMemoryInput } from "../agents/memories.ts";
+import { FakeEmbedder, scoredAgainst, unitVector } from "../testing/fake-embedder.ts";
+import { FakeMemoryStore } from "../testing/fake-memory-store.ts";
 import { runChat, runWithTimeout } from "./chat-service.ts";
 import type { ChatRequest } from "./schemas.ts";
 import { resolveSettings, type AppSettings } from "./server.ts";
@@ -77,6 +80,7 @@ function serviceSettings(strategy: ReasoningStrategy, conversations: FakeConvers
     registry: { react: () => strategy },
     createDependencies: () => ({ model: {} as BaseChatModel, tools: [] }),
     conversations,
+    memories: new FakeMemoryStore({ embedder: new FakeEmbedder() }),
     ...extra,
   });
 }
@@ -228,5 +232,111 @@ describe("runChat: conversation", () => {
       return error instanceof ConversationNotFoundError && error.conversationId === "missing";
     });
     assert.deepEqual(strategy.inputs, []);
+  });
+});
+
+describe("runChat: memory", () => {
+  const QUERY = "who should I page about failed purchases?";
+  const FACT = "The payments team owns the checkout service";
+
+  async function seededMemories(options: { failing?: boolean } = {}) {
+    const embedder = new FakeEmbedder({ [QUERY]: unitVector({ 0: 1 }), [FACT]: scoredAgainst(0, 0.6) }, options);
+    const store = new FakeMemoryStore({ embedder });
+    if (!options.failing) await store.remember("oncall-a", FACT);
+    return { store, embedder };
+  }
+
+  const withUser = (message: string, userId?: string): ChatRequest => ({
+    ...request(message),
+    ...(userId === undefined ? {} : { userId }),
+  });
+
+  it("puts the user's recalled facts ahead of the message and counts them", async () => {
+    const { store } = await seededMemories();
+    const strategy = recordingStrategy(async () => completed("page payments"));
+
+    const outcome = await runChat(serviceSettings(strategy, new FakeConversationStore(), { memories: store }), withUser(QUERY, "oncall-a"));
+
+    assert.equal(outcome.recalledMemories, 1);
+    assert.equal(strategy.inputs[0], composeMemoryInput([{ id: 1, fact: FACT }], QUERY));
+  });
+
+  it("without a userId, never embeds and leaves the input exactly as before", async () => {
+    const { store, embedder } = await seededMemories();
+    const before = embedder.calls.length;
+    const strategy = recordingStrategy(async () => completed("ok"));
+
+    const outcome = await runChat(serviceSettings(strategy, new FakeConversationStore(), { memories: store }), withUser(QUERY));
+
+    assert.equal(outcome.recalledMemories, 0);
+    assert.equal(strategy.inputs[0], QUERY);
+    assert.equal(embedder.calls.length, before);
+  });
+
+  it("recalls nothing for another user", async () => {
+    const { store } = await seededMemories();
+    const strategy = recordingStrategy(async () => completed("ok"));
+    const outcome = await runChat(serviceSettings(strategy, new FakeConversationStore(), { memories: store }), withUser(QUERY, "oncall-b"));
+    assert.equal(outcome.recalledMemories, 0);
+    assert.equal(strategy.inputs[0], QUERY);
+  });
+
+  it("rejects an unknown conversation before embedding anything", async () => {
+    const { store, embedder } = await seededMemories();
+    const before = embedder.calls.length;
+    const settings = serviceSettings(recordingStrategy(async () => completed("ok")), new FakeConversationStore(), { memories: store });
+
+    await assert.rejects(runChat(settings, { ...withUser(QUERY, "oncall-a"), conversationId: "missing" }), ConversationNotFoundError);
+    assert.equal(embedder.calls.length, before);
+  });
+
+  it("when recall fails, throws EmbeddingError, creates no conversation, and does not run the agent", async () => {
+    const { store } = await seededMemories({ failing: true });
+    const created: string[] = [];
+    class CountingStore extends FakeConversationStore {
+      override create() {
+        const conversation = super.create();
+        created.push(conversation.id);
+        return conversation;
+      }
+    }
+    const strategy = recordingStrategy(async () => completed("ok"));
+
+    await assert.rejects(runChat(serviceSettings(strategy, new CountingStore(), { memories: store }), withUser(QUERY, "oncall-a")), EmbeddingError);
+    assert.deepEqual(created, []);
+    assert.deepEqual(strategy.inputs, []);
+  });
+
+  it("does not show a fact remembered during the run in that same run's input", async () => {
+    const { store } = await seededMemories();
+    const strategy = recordingStrategy(async () => {
+      await store.remember("oncall-a", FACT);
+      return completed("ok");
+    });
+    await runChat(serviceSettings(strategy, new FakeConversationStore(), { memories: store }), withUser(QUERY, "oncall-a"));
+    assert.equal(strategy.inputs[0], composeMemoryInput([{ id: 1, fact: FACT }], QUERY));
+  });
+});
+
+describe("runChat: memory tools", () => {
+  async function toolNamesFor(userId?: string): Promise<string[]> {
+    let seen: string[] = [];
+    const strategy = recordingStrategy(async () => completed("ok"));
+    const settings = serviceSettings(strategy, new FakeConversationStore(), {
+      registry: {
+        react: (dependencies) => {
+          seen = dependencies.tools.map((tool) => tool.name);
+          return strategy;
+        },
+      },
+      memories: new FakeMemoryStore({ embedder: new FakeEmbedder({ hi: unitVector({ 0: 1 }) }) }),
+    });
+    await runChat(settings, { ...request("hi"), ...(userId === undefined ? {} : { userId }) });
+    return seen;
+  }
+
+  it("offers remember_fact only when the request has a userId", async () => {
+    assert.ok((await toolNamesFor("oncall-a")).includes("remember_fact"));
+    assert.equal((await toolNamesFor()).includes("remember_fact"), false);
   });
 });

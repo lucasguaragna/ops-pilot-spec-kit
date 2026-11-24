@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { UserId } from "../domain/schemas.ts";
 
 export const ChatRequest = z.object({
   message: z.string().trim().min(1),
@@ -7,6 +8,8 @@ export const ChatRequest = z.object({
   reflect: z.boolean(),
   /** Continues an existing conversation; without it a new one starts. A malformed id is a 400. */
   conversationId: z.uuid().optional(),
+  /** Whose memories to recall and save; without it the run has no memory. */
+  userId: UserId.optional(),
 });
 export type ChatRequest = z.infer<typeof ChatRequest>;
 
@@ -31,6 +34,8 @@ export const MetricsSchema = z.object({
   latencyMs: Count,
   /** How many earlier messages the agent was given. HTTP-only: the domain Metrics type does not have it. */
   historyMessages: Count,
+  /** How many remembered facts the agent was given (0 to 3). HTTP-only, like historyMessages. */
+  recalledMemories: Count,
 });
 
 export const ChatReply = z.object({

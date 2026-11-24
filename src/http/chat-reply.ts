@@ -16,8 +16,14 @@ export interface ConversationInfo {
   historyMessages: number;
 }
 
-/** What happened to a request once it reached the service. */
-export type ChatOutcome = RunOutcome & { conversation: ConversationInfo };
+/** What happened to a request once it reached the service, and how many facts the agent was given. */
+export type ChatOutcome = RunOutcome & { conversation: ConversationInfo; recalledMemories: number };
+
+/** The context counts every reply with metrics reports. */
+const contextMetrics = (outcome: ChatOutcome) => ({
+  historyMessages: outcome.conversation.historyMessages,
+  recalledMemories: outcome.recalledMemories,
+});
 
 export interface HttpReply {
   status: number;
@@ -30,7 +36,7 @@ const RUN_ERROR_MESSAGE = "The run failed; details are in the server log";
 /** The error text can come from the model provider, so only its class name reaches the client. */
 function runFailed(
   runError: RunError,
-  conversation: ConversationInfo,
+  outcome: ChatOutcome,
   partial?: { trace: TraceEvent[]; metrics: Metrics },
 ): HttpReply {
   return {
@@ -39,10 +45,10 @@ function runFailed(
       error: "run_failed",
       message: RUN_FAILED_MESSAGE,
       runError: { name: runError.name, message: RUN_ERROR_MESSAGE },
-      conversationId: conversation.id,
+      conversationId: outcome.conversation.id,
       ...(partial && {
         trace: partial.trace,
-        metrics: { ...partial.metrics, historyMessages: conversation.historyMessages },
+        metrics: { ...partial.metrics, ...contextMetrics(outcome) },
       }),
     },
   };
@@ -63,7 +69,7 @@ export function toHttpReply(outcome: ChatOutcome): HttpReply {
       const { result } = outcome;
       if (result.stopReason === "error") {
         const { trace, metrics } = result;
-        return runFailed(result.error, conversation, { trace, metrics });
+        return runFailed(result.error, outcome, { trace, metrics });
       }
       return {
         status: 200,
@@ -72,12 +78,12 @@ export function toHttpReply(outcome: ChatOutcome): HttpReply {
           answer: result.answer,
           stopReason: result.stopReason,
           trace: result.trace,
-          metrics: { ...result.metrics, historyMessages: conversation.historyMessages },
+          metrics: { ...result.metrics, ...contextMetrics(outcome) },
         },
       };
     }
     case "thrown":
-      return runFailed(toRunError(outcome.error), conversation);
+      return runFailed(toRunError(outcome.error), outcome);
     case "timeout":
       return {
         status: 504,

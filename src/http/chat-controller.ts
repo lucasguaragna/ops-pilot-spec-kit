@@ -1,5 +1,5 @@
 import type { RequestHandler } from "express";
-import { ConversationNotFoundError, UnknownStrategyError } from "../domain/errors.ts";
+import { ConversationNotFoundError, EmbeddingError, UnknownStrategyError } from "../domain/errors.ts";
 import {
   conversationNotFoundReply,
   failureOf,
@@ -33,7 +33,11 @@ export function postChat(settings: ResolvedSettings): RequestHandler {
       } catch (error) {
         if (error instanceof UnknownStrategyError) reply = unknownStrategyReply(error);
         else if (error instanceof ConversationNotFoundError) reply = conversationNotFoundReply(error);
-        else throw error;
+        else {
+          // The last-resort handler hides every detail from the client, so say here what failed.
+          if (error instanceof EmbeddingError) console.error(`Memory recall failed: ${error.message}`);
+          throw error;
+        }
       }
       // A reply that fails its own schema is a bug: it throws and becomes a 500 (FR-010).
       const { status, body } = reply;

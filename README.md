@@ -76,6 +76,7 @@ Each feature has a folder in `specs/` with its spec, plan, tasks and contracts.
 | Provider status tool | `check_provider_status` reads the public GitHub or Cloudflare status page. It needs no key, retries once, times out after 5 s and never throws | `005-provider-status-tool` |
 | MCP server | `opspilot` server over stdio that exposes the incident tools to MCP clients | `006-mcp-server` |
 | Persistent conversation | `POST /chat` takes an optional `conversationId`. The last 12 messages go into the prompt, saved in the same SQLite file | `007-persistent-conversation` |
+| Semantic memory | `POST /chat` takes an optional `userId`. Up to 3 of that user's facts, matched by meaning with a local `all-MiniLM-L6-v2` model, go into the prompt; the agent saves and forgets facts with two tools | `008-semantic-memory` |
 
 ### Tools
 
@@ -87,8 +88,11 @@ Each feature has a folder in `specs/` with its spec, plan, tasks and contracts.
 | `list_incidents` | List incidents by status | yes | no |
 | `get_runbook` | Return the runbook of a service | yes | no |
 | `check_provider_status` | Check the public status of GitHub or Cloudflare | yes | no |
+| `remember_fact` | Save a lasting fact for the request's `userId`; a near-duplicate (score above 0.92) is not stored again | only with `userId` | no |
+| `forget_fact` | Forget one of the request's user's facts by its `[memory N]` id | only with `userId` | no |
 
-All tools are declared once in `src/tools/definitions.ts`, and their input schemas live in
+All tools are declared once in `src/tools/definitions.ts` (the memory tools in
+`src/tools/memory-definitions.ts`, kept out of the MCP server), and their input schemas live in
 `src/domain/schemas.ts`. The LangChain tools (`src/agents/tools.ts`) and the MCP tools
 (`src/mcp/create-server.ts`) are both built from those definitions. Because of that, a change to a
 description or a schema reaches the agent and the MCP clients in one edit.
@@ -117,6 +121,7 @@ Fill in `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` in `.env`. Never commit `.en
 | `OPSPILOT_DB` | every entry point | `./data/opspilot.db` (`data/` is gitignored) |
 | `PORT` | HTTP API | `3000` |
 | `HOST` | HTTP API | `127.0.0.1` |
+| `OPSPILOT_SKIP_MODEL_TESTS` | `npm test` | unset; `1` skips the one test that loads the real embedding model (for an offline machine) |
 
 ## Commands
 
@@ -188,6 +193,7 @@ Send `POST /chat` a JSON body, with the `content-type: application/json` header:
 | `reflect` | boolean | Required; `true` adds the critic |
 | `strategy` | string | Optional; `react` (default) or `plan-execute` |
 | `conversationId` | string (UUID) | Optional; continues that conversation. Without it a new one starts |
+| `userId` | string | Optional, 1 to 128 characters; recalls and saves that user's facts. Without it the run has no memory |
 
 ```sh
 curl -s localhost:3000/chat -H 'content-type: application/json' \
@@ -200,6 +206,7 @@ curl -s localhost:3000/chat -H 'content-type: application/json' \
 | 400 | `invalid_body` | The body fails validation or is not JSON; `issues` lists the zod problems |
 | 404 | `conversation_not_found` | `conversationId` is a UUID but names no conversation. The agent does not run |
 | 422 | `unknown_strategy` | Unknown `strategy`; `knownStrategies` lists the valid names |
+| 500 | `internal` | An unexpected error, including a memory recall that failed (the server logs `Memory recall failed: …`) |
 | 502 | `run_failed` | The run returned an error or threw. The message is fixed; the real error is in the server log |
 | 504 | `timeout` | The run did not finish in 180 s and was cancelled |
 
@@ -214,6 +221,26 @@ curl -s localhost:3000/chat -H 'content-type: application/json' \
 Only a run that finishes with an answer is saved, so a failed or timed-out request leaves the
 history as it was and can be retried. Conversations live in the file at `OPSPILOT_DB` and survive a
 restart. The 502 and 504 replies also carry `conversationId`.
+
+### Semantic memory
+
+With a `userId`, the server recalls that user's facts before the run: up to 3, best first, each
+scoring at least 0.3 against the message by meaning, not by shared words. They go ahead of the
+message as `[memory N] <fact>` lines, and `metrics.recalledMemories` says how many. The agent also
+gets `remember_fact` and `forget_fact`, bound to that `userId`, so it can only touch that user's
+facts. Facts live in the `memories` table of the file at `OPSPILOT_DB`.
+
+```sh
+curl -s localhost:3000/chat -H 'content-type: application/json' \
+  -d '{"message":"Remember: the payments team owns the checkout service","reflect":false,"userId":"oncall-a"}'
+curl -s localhost:3000/chat -H 'content-type: application/json' \
+  -d '{"message":"who should I page about failed purchases?","reflect":false,"userId":"oncall-a"}'
+```
+
+The second request shares no word with the fact, and still recalls it. Embeddings come from
+`Xenova/all-MiniLM-L6-v2` through `@huggingface/transformers`, run locally. The model (about 90 MB)
+is downloaded on the first request that needs it and cached under
+`node_modules/@huggingface/transformers/.cache/`; after that it runs offline.
 
 The server validates every reply body against its schema before sending it.
 

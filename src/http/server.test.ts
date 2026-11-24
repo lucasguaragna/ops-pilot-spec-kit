@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { after, describe, it } from "node:test";
 import { FakeConversationStore } from "../testing/fake-conversation-store.ts";
+import { FakeEmbedder, scoredAgainst, unitVector } from "../testing/fake-embedder.ts";
+import { FakeMemoryStore } from "../testing/fake-memory-store.ts";
 import { ScriptedChatModel, toolCallTurn } from "../testing/scripted-chat-model.ts";
 import { VERDICT_TOOL_NAME } from "../agents/reflection.ts";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
@@ -57,6 +59,7 @@ function settingsFor(strategies: Record<string, ReasoningStrategy>, extra: Parti
     registry,
     createDependencies: () => ({ model: {} as BaseChatModel, tools: [] }),
     conversations: new FakeConversationStore(),
+    memories: new FakeMemoryStore({ embedder: new FakeEmbedder() }),
     ...extra,
   };
 }
@@ -81,7 +84,7 @@ describe("POST /chat: successful runs", () => {
     assert.equal(json.answer, "Two alerts are firing.");
     assert.equal(json.stopReason, "completed");
     assert.equal(json.trace.length, 3);
-    assert.deepEqual(json.metrics, { llmCalls: 2, latencyMs: 15, historyMessages: 0 });
+    assert.deepEqual(json.metrics, { llmCalls: 2, latencyMs: 15, historyMessages: 0, recalledMemories: 0 });
     assert.equal(typeof json.conversationId, "string");
     assert.equal(react.calls.length, 1);
     assert.equal(react.calls[0]?.input, "Which alerts are firing?");
@@ -416,5 +419,46 @@ describe("POST /chat: conversations", () => {
 
     assert.equal(status, 422);
     assert.deepEqual(created, []);
+  });
+});
+
+describe("POST /chat: memory", () => {
+  const QUERY = "who should I page about failed purchases?";
+  const FACT = "The payments team owns the checkout service";
+
+  it("reports how many facts were recalled for the user", async () => {
+    const memories = new FakeMemoryStore({
+      embedder: new FakeEmbedder({ [QUERY]: unitVector({ 0: 1 }), [FACT]: scoredAgainst(0, 0.6) }),
+    });
+    await memories.remember("oncall-a", FACT);
+    const react = fakeStrategy("react", completed("page payments"));
+    const baseUrl = await startServer(settingsFor({ react }, { memories }));
+
+    const { status, json } = await postChat(baseUrl, { message: QUERY, reflect: false, userId: "oncall-a" });
+
+    assert.equal(status, 200);
+    assert.equal(json.metrics.recalledMemories, 1);
+    assert.match(react.calls[0]!.input, /\[memory 1\] The payments team owns the checkout service/);
+  });
+
+  it("rejects a blank userId with 400", async () => {
+    const baseUrl = await startServer(settingsFor({ react: fakeStrategy("react", completed("ok")) }));
+    const { status, json } = await postChat(baseUrl, { message: "hi", reflect: false, userId: "   " });
+    assert.equal(status, 400);
+    assert.equal(json.error, "invalid_body");
+  });
+
+  it("answers 500 internal and logs the cause when recall fails", async (t) => {
+    const logged = t.mock.method(console, "error", () => {});
+    const memories = new FakeMemoryStore({ embedder: new FakeEmbedder({}, { failing: true }) });
+    const react = fakeStrategy("react", completed("ok"));
+    const baseUrl = await startServer(settingsFor({ react }, { memories }));
+
+    const { status, json } = await postChat(baseUrl, { message: QUERY, reflect: false, userId: "oncall-a" });
+
+    assert.equal(status, 500);
+    assert.deepEqual(json, { error: "internal", message: "Internal server error" });
+    assert.deepEqual(react.calls, []);
+    assert.match(String(logged.mock.calls[0]?.arguments[0]), /^Memory recall failed: Embedding failed: /);
   });
 });

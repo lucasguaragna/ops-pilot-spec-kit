@@ -131,3 +131,49 @@ export const StoredMessage = NewMessage.extend({
   createdAt: z.string().min(1),
 });
 export type StoredMessage = z.infer<typeof StoredMessage>;
+
+/** Whoever the client says it is: there is no authentication. The memories table CHECK mirrors the limits. */
+export const UserId = z.string().trim().min(1).max(128);
+export type UserId = z.infer<typeof UserId>;
+
+/** One lasting fact, one sentence or a short paragraph. The memories table CHECK mirrors the limits. */
+export const MemoryFact = z
+  .string()
+  .trim()
+  .min(1)
+  .max(500)
+  .describe("The fact in one short sentence, for example 'The payments team owns the checkout service'.");
+export type MemoryFact = z.infer<typeof MemoryFact>;
+
+export const MemoryId = z
+  .number()
+  .int()
+  .positive()
+  .describe("The N in [memory N] from the remembered facts at the top of the request.");
+export type MemoryId = z.infer<typeof MemoryId>;
+
+/** A stored fact. The embedding never leaves the store. */
+export const Memory = z.object({
+  id: MemoryId,
+  userId: UserId,
+  fact: MemoryFact,
+  /** ISO 8601 */
+  createdAt: z.string().min(1),
+});
+export type Memory = z.infer<typeof Memory>;
+
+/** A memory returned by recall, with its similarity to the query. Built per request, never stored. */
+export const RecalledMemory = Memory.extend({ score: z.number().min(-1.0001).max(1.0001) });
+export type RecalledMemory = z.infer<typeof RecalledMemory>;
+
+/** No user id on purpose: the tool acts on the user of the request (FR-017). */
+export const RememberFactInput = z.object({ fact: MemoryFact });
+export type RememberFactInput = z.infer<typeof RememberFactInput>;
+
+/** No user id on purpose: the tool acts on the user of the request (FR-017). */
+export const ForgetFactInput = z.object({ id: MemoryId });
+export type ForgetFactInput = z.infer<typeof ForgetFactInput>;
+
+/** `created: false` means an existing near-duplicate was returned and nothing new was stored. */
+export const RememberResult = z.object({ memory: Memory, created: z.boolean() });
+export type RememberResult = z.infer<typeof RememberResult>;

@@ -29,6 +29,16 @@ export function runToolText(action: () => unknown): ToolOutcome {
   }
 }
 
+/** `runToolText` for a store call that returns a promise, with the same rule. */
+export async function runToolTextAsync(action: () => Promise<unknown>): Promise<ToolOutcome> {
+  try {
+    return { text: JSON.stringify(await action()), isError: false };
+  } catch (error) {
+    if (error instanceof DomainError) return { text: `Error: ${error.message}`, isError: true };
+    throw error;
+  }
+}
+
 export const listAlertsDefinition = {
   name: "list_alerts",
   description:
