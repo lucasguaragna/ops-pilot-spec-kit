@@ -1,4 +1,4 @@
-import { ForgetFactInput, RememberFactInput } from "../domain/schemas.ts";
+import { ForgetFactInput, ForgetPreferenceInput, RememberFactInput } from "../domain/schemas.ts";
 import type { MemoryStore } from "../memory/memory-store.ts";
 
 /**
@@ -32,5 +32,20 @@ export const forgetFactDefinition = {
   run: (memories: MemoryStore, userId: string, { id }: ForgetFactInput) => {
     memories.forget(userId, id);
     return { id, forgotten: true };
+  },
+} as const;
+
+export const forgetPreferenceDefinition = {
+  name: "forget_preference",
+  description:
+    "Forget a saved fact by describing it, when the engineer asks you to forget something and you " +
+    "do not have its [memory N] id. Give a short description of the fact, for example 'prefers " +
+    "bullet lists'. Only the single closest saved fact is removed, and only if it matches closely. " +
+    "Returns { id, fact, forgotten: true } for the removed fact, or { forgotten: false } when no " +
+    "saved fact matches.",
+  schema: ForgetPreferenceInput,
+  run: async (memories: MemoryStore, userId: string, { description }: ForgetPreferenceInput) => {
+    const memory = await memories.forgetClosest(userId, description);
+    return memory ? { id: memory.id, fact: memory.fact, forgotten: true } : { forgotten: false };
   },
 } as const;

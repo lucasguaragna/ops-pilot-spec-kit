@@ -1,7 +1,11 @@
 import { tool } from "@langchain/core/tools";
 import type { MemoryStore } from "../memory/memory-store.ts";
 import { runToolText, runToolTextAsync } from "../tools/definitions.ts";
-import { forgetFactDefinition, rememberFactDefinition } from "../tools/memory-definitions.ts";
+import {
+  forgetFactDefinition,
+  forgetPreferenceDefinition,
+  rememberFactDefinition,
+} from "../tools/memory-definitions.ts";
 
 /**
  * The memory tools for one request. `userId` is captured here and is not in any schema, so the
@@ -27,5 +31,15 @@ export function createMemoryTools(memories: MemoryStore, userId: string) {
     },
   );
 
-  return [rememberFact, forgetFact] as const;
+  // An EmbeddingError is not a DomainError, so runToolTextAsync lets it fail the run, as in remember_fact.
+  const forgetPreference = tool(
+    async (input) => (await runToolTextAsync(() => forgetPreferenceDefinition.run(memories, userId, input))).text,
+    {
+      name: forgetPreferenceDefinition.name,
+      description: forgetPreferenceDefinition.description,
+      schema: forgetPreferenceDefinition.schema,
+    },
+  );
+
+  return [rememberFact, forgetFact, forgetPreference] as const;
 }

@@ -13,6 +13,8 @@ export const RECALL_LIMIT = 3;
 export const RECALL_MIN_SCORE = 0.3;
 /** A new fact scoring above this against an existing one is a duplicate. */
 export const DUPLICATE_THRESHOLD = 0.92;
+/** forgetClosest removes a fact only when it scores at least this much against the description. */
+export const FORGET_MIN_SCORE = 0.5;
 
 /** Lasting facts per user, matched by meaning. Services and tools depend on this, never on SQL. */
 export interface MemoryStore {
@@ -22,6 +24,12 @@ export interface MemoryStore {
   recall(userId: string, query: string): Promise<RecalledMemory[]>;
   /** Removes the user's memory with this id. Throws MemoryNotFoundError when there is none. */
   forget(userId: string, id: number): void;
+  /**
+   * Removes the user's single memory closest to the description when it scores at least 0.5 (newest
+   * first on a tie) and returns it, without its score. Returns undefined and removes nothing when no
+   * memory scores that much.
+   */
+  forgetClosest(userId: string, description: string): Promise<Memory | undefined>;
 }
 
 /** A memory with its embedding, as the store keeps it. */
@@ -56,6 +64,11 @@ export function rankMemories(
     .sort((a, b) => b.score - a.score || b.id - a.id)
     .slice(0, limit)
     .filter((memory) => memory.score >= minScore);
+}
+
+/** Pure: the closest memory when it scores at least `minScore` (newest first on a tie). */
+export function findClosest(scored: readonly RecalledMemory[], minScore: number): RecalledMemory | undefined {
+  return rankMemories(scored, { limit: 1, minScore })[0];
 }
 
 /** Pure: the closest memory when it scores above `threshold` (exactly the threshold is not a duplicate). */
@@ -165,6 +178,17 @@ export class SqliteMemoryStore implements MemoryStore {
   forget(userId: string, id: number): void {
     const user = UserId.parse(userId);
     if (this.deleteOne.run(id, user).changes !== 1) throw new MemoryNotFoundError(id);
+  }
+
+  async forgetClosest(userId: string, description: string): Promise<Memory | undefined> {
+    const user = UserId.parse(userId);
+    const text = MemoryFact.parse(description);
+    const vector = await this.embedder.embed(text);
+    // No await from here on, as in remember: the scan and the delete run as one step.
+    const closest = findClosest(scoreRows(vector, this.allOf(user)), FORGET_MIN_SCORE);
+    if (!closest) return undefined;
+    this.deleteOne.run(closest.id, user);
+    return withoutScore(closest);
   }
 
   private allOf(userId: string): EmbeddedMemory[] {

@@ -6,13 +6,16 @@ import { ConversationNotFoundError } from "../domain/errors.ts";
 import {
   conversationNotFoundReply,
   failureOf,
+  learningLogLine,
   messagesToSave,
+  shouldLearn,
   toHttpReply,
   unknownStrategyReply,
   type ChatOutcome,
   type RunOutcome,
 } from "./chat-reply.ts";
 import { ChatReply, ErrorReply } from "./schemas.ts";
+import type { LearningOutcome } from "../agents/learning-reflector.ts";
 
 const metrics = { llmCalls: 2, latencyMs: 10 };
 const trace: RunResult["trace"] = [{ type: "answer", content: "done" }];
@@ -165,4 +168,73 @@ describe("messagesToSave", () => {
       assert.deepEqual(messagesToSave("the question", outcome), expected);
     });
   }
+});
+
+describe("shouldLearn", () => {
+  const result = (stopReason: "completed" | "iteration_limit"): RunOutcome => ({
+    kind: "result",
+    result:
+      stopReason === "completed"
+        ? { stopReason, answer: "done", trace, metrics }
+        : { stopReason, answer: null, trace, metrics },
+  });
+
+  it("is true only for a userId and a completed result", () => {
+    assert.equal(shouldLearn("u1", result("completed")), true);
+  });
+
+  for (const [label, userId, outcome] of [
+    ["no userId", undefined, result("completed")],
+    ["the iteration limit", "u1", result("iteration_limit")],
+    ["a thrown run", "u1", { kind: "thrown", error: new Error("boom") }],
+    ["a timed-out run", "u1", { kind: "timeout", timeoutMs: 10 }],
+  ] as const) {
+    it(`is false for ${label}`, () => {
+      assert.equal(shouldLearn(userId, outcome), false);
+    });
+  }
+});
+
+describe("learningLogLine", () => {
+  const FACT = "The engineer's DB password is hunter2";
+  const memory = { id: 7, userId: "u1", fact: FACT, createdAt: "2026-11-24T00:00:00.000Z" };
+  const done = (value: LearningOutcome) => ({ kind: "done" as const, value });
+
+  const cases = [
+    ["saved", done({ kind: "saved", memory }), { stream: "log", line: "Learned [memory 7] for u1" }],
+    ["duplicate", done({ kind: "duplicate", memory }), { stream: "log", line: "Learning already known as [memory 7] for u1" }],
+    ["skipped: secret", done({ kind: "skipped", reason: "secret" }), { stream: "warn", line: "Learning skipped for u1: secret" }],
+    [
+      "skipped: invalid_fact",
+      done({ kind: "skipped", reason: "invalid_fact" }),
+      { stream: "warn", line: "Learning skipped for u1: invalid_fact" },
+    ],
+    ["skipped: no_learning", done({ kind: "skipped", reason: "no_learning" }), undefined],
+    [
+      "thrown",
+      { kind: "thrown", error: new Error("provider down") },
+      { stream: "error", line: "Learning failed for u1: Error: provider down" },
+    ],
+    ["thrown, not an Error", { kind: "thrown", error: "boom" }, { stream: "error", line: "Learning failed for u1: boom" }],
+    ["timeout", { kind: "timeout" }, { stream: "error", line: "Learning timed out after 30000 ms for u1" }],
+  ] as const;
+
+  for (const [label, timed, expected] of cases) {
+    it(`maps ${label}`, () => {
+      assert.deepEqual(learningLogLine("u1", timed, 30_000), expected);
+    });
+  }
+
+  it("prints the timeout it was given", () => {
+    assert.deepEqual(learningLogLine("u1", { kind: "timeout" }, 1), {
+      stream: "error",
+      line: "Learning timed out after 1 ms for u1",
+    });
+  });
+
+  it("never prints the fact text", () => {
+    for (const [, timed] of cases) {
+      assert.doesNotMatch(learningLogLine("u1", timed, 30_000)?.line ?? "", /hunter2|password/);
+    }
+  });
 });

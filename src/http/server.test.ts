@@ -4,9 +4,10 @@ import { after, describe, it } from "node:test";
 import { FakeConversationStore } from "../testing/fake-conversation-store.ts";
 import { FakeEmbedder, scoredAgainst, unitVector } from "../testing/fake-embedder.ts";
 import { FakeMemoryStore } from "../testing/fake-memory-store.ts";
+import { learningTurn, NO_LEARNING } from "../testing/learning-turns.ts";
+import { BackgroundTasks } from "./background-tasks.ts";
 import { ScriptedChatModel, toolCallTurn } from "../testing/scripted-chat-model.ts";
 import { VERDICT_TOOL_NAME } from "../agents/reflection.ts";
-import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { StrategyRegistry } from "../agents/index.ts";
 import type { ReasoningStrategy, RunOptions, RunResult } from "../domain/types.ts";
 import { createApp, type AppSettings } from "./server.ts";
@@ -57,7 +58,8 @@ function settingsFor(strategies: Record<string, ReasoningStrategy>, extra: Parti
   );
   return {
     registry,
-    createDependencies: () => ({ model: {} as BaseChatModel, tools: [] }),
+    // The fake strategies never call the model; only the learning step does, and it learns nothing.
+    createDependencies: () => ({ model: new ScriptedChatModel([NO_LEARNING]), tools: [] }),
     conversations: new FakeConversationStore(),
     memories: new FakeMemoryStore({ embedder: new FakeEmbedder() }),
     ...extra,
@@ -439,6 +441,40 @@ describe("POST /chat: memory", () => {
     assert.equal(status, 200);
     assert.equal(json.metrics.recalledMemories, 1);
     assert.match(react.calls[0]!.input, /\[memory 1\] The payments team owns the checkout service/);
+  });
+
+  it("answers with the same body shape and learns the fact in the background (SC-006)", async (t) => {
+    t.mock.method(console, "log", () => {});
+    const LEARNED = "The engineer is on the payments team";
+    const memories = new FakeMemoryStore({
+      embedder: new FakeEmbedder({ [QUERY]: unitVector({ 0: 1 }), [LEARNED]: scoredAgainst(0, 0.6) }),
+    });
+    const background = new BackgroundTasks();
+    const react = fakeStrategy("react", completed("page payments"));
+    const baseUrl = await startServer(
+      settingsFor(
+        { react },
+        {
+          memories,
+          background,
+          createDependencies: () => ({
+            model: new ScriptedChatModel([learningTurn({ hasLearning: true, fact: LEARNED })]),
+            tools: [],
+          }),
+        },
+      ),
+    );
+
+    const { status, json } = await postChat(baseUrl, { message: QUERY, reflect: false, userId: "oncall-a" });
+    await background.settled();
+
+    assert.equal(status, 200);
+    assert.deepEqual(Object.keys(json).sort(), ["answer", "conversationId", "metrics", "stopReason", "trace"]);
+    assert.deepEqual(json.metrics, { llmCalls: 2, latencyMs: 15, historyMessages: 0, recalledMemories: 0 });
+    assert.deepEqual(
+      (await memories.recall("oncall-a", QUERY)).map((memory) => memory.fact),
+      [LEARNED],
+    );
   });
 
   it("rejects a blank userId with 400", async () => {

@@ -77,6 +77,7 @@ Each feature has a folder in `specs/` with its spec, plan, tasks and contracts.
 | MCP server | `opspilot` server over stdio that exposes the incident tools to MCP clients | `006-mcp-server` |
 | Persistent conversation | `POST /chat` takes an optional `conversationId`. The last 12 messages go into the prompt, saved in the same SQLite file | `007-persistent-conversation` |
 | Semantic memory | `POST /chat` takes an optional `userId`. Up to 3 of that user's facts, matched by meaning with a local `all-MiniLM-L6-v2` model, go into the prompt; the agent saves and forgets facts with two tools | `008-semantic-memory` |
+| Learning reflector | After each completed reply with a `userId`, a background step learns at most one lasting fact from the message, never a one-off request or a secret; `forget_preference` forgets a fact by description | `009-learning-reflector` |
 
 ### Tools
 
@@ -241,6 +242,19 @@ The second request shares no word with the fact, and still recalls it. Embedding
 `Xenova/all-MiniLM-L6-v2` through `@huggingface/transformers`, run locally. The model (about 90 MB)
 is downloaded on the first request that needs it and cached under
 `node_modules/@huggingface/transformers/.cache/`; after that it runs offline.
+
+**Learning.** The engineer does not have to say "remember". After a request with a `userId`
+completes with an answer, a background step reads only that request's message and asks the same
+model whether it states a lasting fact (who owns what, the engineer's team, preferences, quirks of
+their systems). It keeps at most one fact per message and saves it through the same memory, so
+the 0.92 dedup applies. It never learns one-off requests, questions, or the state of a live alert,
+and never a secret: besides the prompt rule, every proposed fact goes through a deterministic
+check for passwords, keys, tokens, and credentialed URLs. The reply never waits for the step, its
+model calls are not counted in `metrics.llmCalls`, and it gives up after 30 s. The outcome only
+reaches the server log, as `Learned [memory N] for <userId>`, or `Learning skipped for <userId>:
+secret` (the fact itself is never logged). A third tool, `forget_preference`, removes the single
+closest fact to a short description, and only when it scores at least 0.5, so the engineer can
+say "forget that I like bullet lists" without knowing the `[memory N]` id.
 
 The server validates every reply body against its schema before sending it.
 

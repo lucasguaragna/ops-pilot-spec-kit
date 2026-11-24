@@ -1,8 +1,10 @@
 import { MemoryNotFoundError } from "../domain/errors.ts";
-import { MemoryFact, UserId, type RecalledMemory, type RememberResult } from "../domain/schemas.ts";
+import { MemoryFact, UserId, type Memory, type RecalledMemory, type RememberResult } from "../domain/schemas.ts";
 import type { Embedder } from "../memory/embeddings.ts";
 import {
   DUPLICATE_THRESHOLD,
+  FORGET_MIN_SCORE,
+  findClosest,
   findDuplicate,
   withoutScore,
   rankMemories,
@@ -48,6 +50,16 @@ export class FakeMemoryStore implements MemoryStore {
     const index = this.memories.findIndex((memory) => memory.id === id && memory.userId === user);
     if (index === -1) throw new MemoryNotFoundError(id);
     this.memories.splice(index, 1);
+  }
+
+  async forgetClosest(userId: string, description: string): Promise<Memory | undefined> {
+    const user = UserId.parse(userId);
+    const text = MemoryFact.parse(description);
+    const vector = await this.embedder.embed(text);
+    const closest = findClosest(scoreRows(vector, this.allOf(user)), FORGET_MIN_SCORE);
+    if (!closest) return undefined;
+    this.memories.splice(this.memories.findIndex((memory) => memory.id === closest.id), 1);
+    return withoutScore(closest);
   }
 
   private allOf(userId: string): EmbeddedMemory[] {

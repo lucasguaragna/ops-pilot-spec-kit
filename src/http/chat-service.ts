@@ -1,10 +1,11 @@
 import { withHistory } from "../agents/history.ts";
+import { createLearningReflector, type LearningOutcome } from "../agents/learning-reflector.ts";
 import { createStrategy } from "../agents/index.ts";
 import { withMemories } from "../agents/memories.ts";
 import { createMemoryTools } from "../agents/memory-tools.ts";
 import type { NewMessage, RecalledMemory } from "../domain/schemas.ts";
 import type { ReasoningStrategy } from "../domain/types.ts";
-import { messagesToSave, type ChatOutcome, type RunOutcome } from "./chat-reply.ts";
+import { learningLogLine, messagesToSave, shouldLearn, type ChatOutcome, type RunOutcome } from "./chat-reply.ts";
 import type { ChatRequest } from "./schemas.ts";
 import type { ResolvedSettings } from "./server.ts";
 
@@ -59,10 +60,20 @@ async function runTimed(
   }
 }
 
+/** Writes the learning step's line to the matching console stream; nothing for a quiet outcome. */
+function logLearning(userId: string, timed: TimedRun<LearningOutcome>, timeoutMs: number): void {
+  const logLine = learningLogLine(userId, timed, timeoutMs);
+  if (logLine) console[logLine.stream](logLine.line);
+}
+
 /**
  * Looks the strategy up, loads the history, recalls the user's facts, starts the conversation if
  * needed, runs the strategy with both under the timeout, saves a completed exchange, and reports
  * what happened.
+ *
+ * After the save, a completed run of a known user starts the learning step in the background. It is
+ * tracked in `settings.background` and never awaited here, so the reply never waits for it; it
+ * cannot reject, and its outcome only reaches the log.
  *
  * Throws UnknownStrategyError before anything is read or written, then ConversationNotFoundError for
  * an unknown id, then EmbeddingError when recall fails. All three come before a new conversation is
@@ -90,6 +101,17 @@ export async function runChat(settings: ResolvedSettings, request: ChatRequest):
   // DatabaseSync is synchronous and there is no await between the two appends, so no other request
   // can slip in between them. A run that timed out saves nothing, even if it finishes late.
   for (const message of messagesToSave(request.message, outcome)) conversations.append(conversationId, message);
+
+  if (userId !== undefined && shouldLearn(userId, outcome)) {
+    // The step's model calls go through no LlmCallCounter, so the reply's metrics stay the same.
+    const reflector = createLearningReflector({ model: dependencies.model, memories });
+    const { learningTimeoutMs } = settings;
+    settings.background.track(
+      runWithTimeout((signal) => reflector.learn(userId, request.message, signal), learningTimeoutMs).then((timed) =>
+        logLearning(userId, timed, learningTimeoutMs),
+      ),
+    );
+  }
 
   return {
     ...outcome,

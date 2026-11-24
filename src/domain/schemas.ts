@@ -174,6 +174,12 @@ export type RememberFactInput = z.infer<typeof RememberFactInput>;
 export const ForgetFactInput = z.object({ id: MemoryId });
 export type ForgetFactInput = z.infer<typeof ForgetFactInput>;
 
+/** No user id on purpose: the tool acts on the user of the request. Same limits as a fact. */
+export const ForgetPreferenceInput = z.object({
+  description: MemoryFact.describe("A short description of the fact to forget, for example 'prefers bullet lists'."),
+});
+export type ForgetPreferenceInput = z.infer<typeof ForgetPreferenceInput>;
+
 /** `created: false` means an existing near-duplicate was returned and nothing new was stored. */
 export const RememberResult = z.object({ memory: Memory, created: z.boolean() });
 export type RememberResult = z.infer<typeof RememberResult>;

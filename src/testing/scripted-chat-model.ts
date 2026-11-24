@@ -1,9 +1,15 @@
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage, AIMessageChunk } from "@langchain/core/messages";
+import { AIMessage, AIMessageChunk, type BaseMessage } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
 
-/** One scripted turn: a reply, or an error to throw in place of a provider failure. */
-export type ScriptedTurn = AIMessage | Error;
+/** Marks a turn that never answers: the call stays pending until its signal aborts. */
+const HANG = Symbol("hang");
+
+/**
+ * One scripted turn: a reply, an error to throw in place of a provider failure, or a hang that
+ * stands in for a provider that never answers.
+ */
+export type ScriptedTurn = AIMessage | Error | typeof HANG;
 
 interface Script {
   turns: readonly ScriptedTurn[];
@@ -30,17 +36,21 @@ export class ScriptedChatModel extends BaseChatModel {
     return "scripted";
   }
 
+  /** Bound copies keep the script and the callbacks, so a test's handler also sees structured calls. */
   override bindTools(): ScriptedChatModel {
-    return new ScriptedChatModel(this.script);
+    const bound = new ScriptedChatModel(this.script);
+    bound.callbacks = this.callbacks;
+    return bound;
   }
 
-  async _generate(): Promise<ChatResult> {
+  async _generate(_messages: BaseMessage[], options: this["ParsedCallOptions"]): Promise<ChatResult> {
     const { turns } = this.script;
     const call = this.script.calls;
     const turn = turns[Math.min(call, turns.length - 1)];
     this.script.calls += 1;
     if (!turn) throw new Error("ScriptedChatModel has no turns");
     if (turn instanceof Error) throw turn;
+    if (turn === HANG) return hang(options.signal);
     // A fresh message per call: the graph merges messages by id, so a reused one would be replaced.
     // Real chat models return chunks, and structured output parsing requires one.
     const message = new AIMessageChunk({
@@ -49,6 +59,23 @@ export class ScriptedChatModel extends BaseChatModel {
     });
     return { generations: [{ text: message.text, message }] };
   }
+}
+
+/** Pending until the signal aborts, then rejects with its reason; never resolves. */
+function hang(signal: AbortSignal | undefined): Promise<never> {
+  return new Promise<never>((_resolve, reject) => {
+    if (signal === undefined) return;
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  });
+}
+
+/** A turn whose call stays pending until the call's signal aborts, like a hung provider. */
+export function hangingTurn(): ScriptedTurn {
+  return HANG;
 }
 
 export function toolCallTurn(name: string, args: Record<string, unknown>, text = ""): AIMessage {

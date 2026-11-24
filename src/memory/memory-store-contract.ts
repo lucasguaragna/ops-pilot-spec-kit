@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { MemoryNotFoundError } from "../domain/errors.ts";
+import { ZodError } from "zod";
+import { EmbeddingError, MemoryNotFoundError } from "../domain/errors.ts";
 import { FakeEmbedder, scoredAgainst, unitVector } from "../testing/fake-embedder.ts";
 import type { MemoryStore, MemoryStoreOptions } from "./memory-store.ts";
 
@@ -140,6 +141,78 @@ export function runMemoryStoreContract(label: string, makeStore: (options: Memor
         assert.throws(() => store.forget("oncall-a", 999), notFound(999));
         assert.throws(() => store.forget("oncall-b", memory.id), notFound(memory.id));
         assert.deepEqual((await store.recall("oncall-a", QUERY)).map((recalled) => recalled.fact), ["kept"]);
+      });
+    });
+
+    describe("forgetClosest", () => {
+      const facts = async (store: MemoryStore, userId = "oncall-a") =>
+        (await store.recall(userId, QUERY)).map((recalled) => recalled.fact).sort();
+
+      it("removes a fact scoring exactly 0.5 and returns it without a score", async () => {
+        const store = fresh({ fact: scoredAgainst(0, 0.5, 10) });
+        const { memory } = await store.remember("oncall-a", "fact");
+        assert.deepEqual(await store.forgetClosest("oncall-a", QUERY), memory);
+        assert.deepEqual(await facts(store), []);
+      });
+
+      it("removes nothing when the best score is 0.4999", async () => {
+        const store = fresh({ fact: scoredAgainst(0, 0.4999, 10) });
+        await store.remember("oncall-a", "fact");
+        assert.equal(await store.forgetClosest("oncall-a", QUERY), undefined);
+        assert.deepEqual(await facts(store), ["fact"]);
+      });
+
+      it("removes only the closest of several matches", async () => {
+        const store = fresh({ near: scoredAgainst(0, 0.9, 10), fair: scoredAgainst(0, 0.6, 11) });
+        await store.remember("oncall-a", "near");
+        await store.remember("oncall-a", "fair");
+        assert.equal((await store.forgetClosest("oncall-a", QUERY))?.fact, "near");
+        assert.deepEqual(await facts(store), ["fair"]);
+      });
+
+      it("removes the newest on a tie", async () => {
+        const store = fresh({ older: scoredAgainst(0, 0.7, 10), newer: scoredAgainst(0, 0.7, 11) });
+        await store.remember("oncall-a", "older");
+        await store.remember("oncall-a", "newer");
+        assert.equal((await store.forgetClosest("oncall-a", QUERY))?.fact, "newer");
+        assert.deepEqual(await facts(store), ["older"]);
+      });
+
+      it("never removes another user's identical fact", async () => {
+        const store = fresh({ shared: scoredAgainst(0, 0.9, 10) });
+        await store.remember("oncall-a", "shared");
+        await store.remember("oncall-b", "shared");
+        assert.equal((await store.forgetClosest("oncall-a", QUERY))?.userId, "oncall-a");
+        assert.deepEqual(await facts(store, "oncall-b"), ["shared"]);
+      });
+
+      it("returns undefined for a user with no memories", async () => {
+        assert.equal(await fresh({}).forgetClosest("nobody", QUERY), undefined);
+      });
+
+      it("keeps the other facts recallable after a removal", async () => {
+        const store = fresh({ gone: scoredAgainst(0, 0.95, 10), kept: scoredAgainst(0, 0.4, 11) });
+        await store.remember("oncall-a", "gone");
+        await store.remember("oncall-a", "kept");
+        await store.forgetClosest("oncall-a", QUERY);
+        assert.deepEqual(await facts(store), ["kept"]);
+      });
+
+      it("rejects a blank or a 501-character description with ZodError, removing nothing", async () => {
+        const long = "x".repeat(501);
+        const store = fresh({ fact: scoredAgainst(0, 0.9, 10), "": unitVector({ 0: 1 }), [long]: unitVector({ 0: 1 }) });
+        await store.remember("oncall-a", "fact");
+        for (const description of ["   ", long]) await assert.rejects(store.forgetClosest("oncall-a", description), ZodError);
+        assert.deepEqual(await facts(store), ["fact"]);
+      });
+
+      it("rejects an invalid userId with ZodError", async () => {
+        await assert.rejects(fresh({}).forgetClosest("   ", QUERY), ZodError);
+      });
+
+      it("lets an EmbeddingError through", async () => {
+        const store = makeStore({ embedder: new FakeEmbedder({}, { failing: true }), now: () => CONTRACT_NOW });
+        await assert.rejects(store.forgetClosest("oncall-a", QUERY), EmbeddingError);
       });
     });
   });

@@ -8,7 +8,7 @@ import { MemoryFact, UserId, type RecalledMemory } from "../domain/schemas.ts";
 import { FakeEmbedder, scoredAgainst, unitVector } from "../testing/fake-embedder.ts";
 import { dot, EMBEDDING_DIMENSIONS } from "./embeddings.ts";
 import { runMemoryStoreContract } from "./memory-store-contract.ts";
-import { findDuplicate, fromBlob, MEMORY_SCHEMA, rankMemories, scoreRows, SqliteMemoryStore, toBlob } from "./memory-store.ts";
+import { FORGET_MIN_SCORE, findClosest, findDuplicate, fromBlob, MEMORY_SCHEMA, rankMemories, scoreRows, SqliteMemoryStore, toBlob } from "./memory-store.ts";
 
 describe("dot", () => {
   it("is 1 for a unit vector with itself and 0 for two orthogonal axes", () => {
@@ -97,6 +97,37 @@ describe("findDuplicate", () => {
 });
 
 runMemoryStoreContract("sqlite :memory:", (options) => new SqliteMemoryStore(":memory:", options));
+
+describe("findClosest", () => {
+  const scored = (id: number, score: number): RecalledMemory => ({
+    id,
+    userId: "oncall-a",
+    fact: `fact ${id}`,
+    createdAt: "2026-11-24T00:00:00.000Z",
+    score,
+  });
+
+  it("returns a memory scoring exactly the minimum", () => {
+    assert.equal(FORGET_MIN_SCORE, 0.5);
+    assert.equal(findClosest([scored(1, 0.5)], FORGET_MIN_SCORE)?.id, 1);
+  });
+
+  it("returns undefined when the best score is just below the minimum", () => {
+    assert.equal(findClosest([scored(1, 0.4999)], FORGET_MIN_SCORE), undefined);
+  });
+
+  it("returns the highest of several", () => {
+    assert.equal(findClosest([scored(1, 0.6), scored(2, 0.9), scored(3, 0.7)], FORGET_MIN_SCORE)?.id, 2);
+  });
+
+  it("returns the newest on a tie", () => {
+    assert.equal(findClosest([scored(1, 0.8), scored(2, 0.8)], FORGET_MIN_SCORE)?.id, 2);
+  });
+
+  it("returns undefined for an empty list", () => {
+    assert.equal(findClosest([], FORGET_MIN_SCORE), undefined);
+  });
+});
 
 describe("SqliteMemoryStore: restart", () => {
   const vectors = {

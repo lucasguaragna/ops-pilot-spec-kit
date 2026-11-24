@@ -21,9 +21,70 @@ const freshStore = () =>
 
 const rememberFactOf = (store: FakeMemoryStore, userId: string) => createMemoryTools(store, userId)[0];
 const forgetFactOf = (store: FakeMemoryStore, userId: string) => createMemoryTools(store, userId)[1];
+const forgetPreferenceOf = (store: FakeMemoryStore, userId: string) => createMemoryTools(store, userId)[2];
 
-it("builds remember_fact and forget_fact, in that order", () => {
-  assert.deepEqual(createMemoryTools(freshStore(), "oncall-a").map((tool) => tool.name), ["remember_fact", "forget_fact"]);
+it("builds remember_fact, forget_fact, and forget_preference, in that order", () => {
+  assert.deepEqual(createMemoryTools(freshStore(), "oncall-a").map((tool) => tool.name), [
+    "remember_fact",
+    "forget_fact",
+    "forget_preference",
+  ]);
+});
+
+describe("forget_preference", () => {
+  const UNRELATED = "prefers bullet lists";
+  const store = () =>
+    new FakeMemoryStore({
+      embedder: new FakeEmbedder({
+        [FACT]: unitVector({ 0: 1 }),
+        [REWORDED]: scoredAgainst(0, 0.95, 1),
+        [UNRELATED]: scoredAgainst(0, 0.2, 2),
+        [QUERY]: unitVector({ 0: 1 }),
+      }),
+    });
+
+  it("has a description and no user id in its schema", () => {
+    assert.deepEqual(Object.keys(forgetPreferenceOf(store(), "oncall-a").schema.shape), ["description"]);
+  });
+
+  it("forgets the closest matching fact and names it", async () => {
+    const memories = store();
+    const { memory } = await memories.remember("oncall-a", FACT);
+    const output = JSON.parse(await forgetPreferenceOf(memories, "oncall-a").invoke({ description: REWORDED }));
+    assert.deepEqual(output, { id: memory.id, fact: FACT, forgotten: true });
+    assert.deepEqual(await memories.recall("oncall-a", QUERY), []);
+  });
+
+  it("reports forgotten false and removes nothing when no fact matches", async () => {
+    const memories = store();
+    await memories.remember("oncall-a", FACT);
+    const output = JSON.parse(await forgetPreferenceOf(memories, "oncall-a").invoke({ description: UNRELATED }));
+    assert.deepEqual(output, { forgotten: false });
+    assert.equal((await memories.recall("oncall-a", QUERY)).length, 1);
+  });
+
+  it("returns a blank description to the model as a tool error and lets the run finish (FR-012)", async () => {
+    const memories = store();
+    await memories.remember("oncall-a", FACT);
+    const model = new ScriptedChatModel([toolCallTurn("forget_preference", { description: "  " }), textTurn("Nothing removed.")]);
+    const strategy = createReactStrategy({ model, tools: [...createMemoryTools(memories, "oncall-a")] });
+
+    const result = await strategy.run("forget nothing", { maxIterations: 4 });
+
+    assert.equal(result.stopReason, "completed");
+    const observation = result.trace.find((event) => event.type === "observation");
+    assert.ok(observation && observation.type === "observation");
+    assert.match(observation.content, /error/i);
+    assert.equal((await memories.recall("oncall-a", QUERY)).length, 1);
+  });
+
+  it("never removes another user's identical fact (FR-010)", async () => {
+    const memories = store();
+    await memories.remember("oncall-b", FACT);
+    const output = JSON.parse(await forgetPreferenceOf(memories, "oncall-a").invoke({ description: REWORDED }));
+    assert.deepEqual(output, { forgotten: false });
+    assert.equal((await memories.recall("oncall-b", QUERY)).length, 1);
+  });
 });
 
 describe("forget_fact", () => {

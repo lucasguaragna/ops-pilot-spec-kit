@@ -1,7 +1,10 @@
+import type { LearningOutcome } from "../agents/learning-reflector.ts";
 import { toRunError } from "../agents/run-outcome.ts";
 import type { ConversationNotFoundError, UnknownStrategyError } from "../domain/errors.ts";
 import type { NewMessage } from "../domain/schemas.ts";
 import type { Metrics, RunError, RunResult, TraceEvent } from "../domain/types.ts";
+// Type-only, so the import cycle with chat-service.ts disappears at run time.
+import type { TimedRun } from "./chat-service.ts";
 import type { ChatReply, ErrorReply } from "./schemas.ts";
 
 /** What happened to the run itself. */
@@ -126,4 +129,51 @@ export function messagesToSave(message: string, outcome: RunOutcome): NewMessage
     { role: "user", content: message },
     { role: "assistant", content: outcome.result.answer },
   ];
+}
+
+/**
+ * Pure: whether the learning step runs. Only a completed run of a known user is learned from, so a
+ * retried request (after a limit, an error, or a timeout) is never learned twice.
+ */
+export function shouldLearn(userId: string | undefined, outcome: RunOutcome): boolean {
+  return userId !== undefined && outcome.kind === "result" && outcome.result.stopReason === "completed";
+}
+
+export interface LogLine {
+  stream: "log" | "warn" | "error";
+  line: string;
+}
+
+/**
+ * Pure: the log line for one learning step, or undefined when there is nothing to say. A fact the
+ * step did not save may hold a secret, so no line ever carries fact text. `timeoutMs` is passed in
+ * because the timeout case of `TimedRun` carries no duration.
+ */
+export function learningLogLine(
+  userId: string,
+  timed: TimedRun<LearningOutcome>,
+  timeoutMs: number,
+): LogLine | undefined {
+  switch (timed.kind) {
+    case "timeout":
+      return { stream: "error", line: `Learning timed out after ${timeoutMs} ms for ${userId}` };
+    case "thrown": {
+      const { error } = timed;
+      const cause = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      return { stream: "error", line: `Learning failed for ${userId}: ${cause}` };
+    }
+    case "done": {
+      const outcome = timed.value;
+      switch (outcome.kind) {
+        case "saved":
+          return { stream: "log", line: `Learned [memory ${outcome.memory.id}] for ${userId}` };
+        case "duplicate":
+          return { stream: "log", line: `Learning already known as [memory ${outcome.memory.id}] for ${userId}` };
+        case "skipped":
+          return outcome.reason === "no_learning"
+            ? undefined
+            : { stream: "warn", line: `Learning skipped for ${userId}: ${outcome.reason}` };
+      }
+    }
+  }
 }

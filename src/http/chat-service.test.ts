@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { ConversationNotFoundError, EmbeddingError, UnknownStrategyError } from "../domain/errors.ts";
 import type { NewMessage } from "../domain/schemas.ts";
 import type { ReasoningStrategy, RunResult } from "../domain/types.ts";
@@ -8,6 +7,10 @@ import { FakeConversationStore } from "../testing/fake-conversation-store.ts";
 import { composeMemoryInput } from "../agents/memories.ts";
 import { FakeEmbedder, scoredAgainst, unitVector } from "../testing/fake-embedder.ts";
 import { FakeMemoryStore } from "../testing/fake-memory-store.ts";
+import { learningTurn, NO_LEARNING } from "../testing/learning-turns.ts";
+import { hangingTurn, ScriptedChatModel, type ScriptedTurn } from "../testing/scripted-chat-model.ts";
+import { BackgroundTasks } from "./background-tasks.ts";
+import type { ChatOutcome } from "./chat-reply.ts";
 import { runChat, runWithTimeout } from "./chat-service.ts";
 import type { ChatRequest } from "./schemas.ts";
 import { resolveSettings, type AppSettings } from "./server.ts";
@@ -78,7 +81,8 @@ function recordingStrategy(run: () => Promise<RunResult>): ReasoningStrategy & {
 function serviceSettings(strategy: ReasoningStrategy, conversations: FakeConversationStore, extra: Partial<AppSettings> = {}) {
   return resolveSettings({
     registry: { react: () => strategy },
-    createDependencies: () => ({ model: {} as BaseChatModel, tools: [] }),
+    // The fake strategies never call the model; only the learning step does, and it learns nothing.
+    createDependencies: () => ({ model: new ScriptedChatModel([NO_LEARNING]), tools: [] }),
     conversations,
     memories: new FakeMemoryStore({ embedder: new FakeEmbedder() }),
     ...extra,
@@ -338,5 +342,202 @@ describe("runChat: memory tools", () => {
   it("offers remember_fact only when the request has a userId", async () => {
     assert.ok((await toolNamesFor("oncall-a")).includes("remember_fact"));
     assert.equal((await toolNamesFor()).includes("remember_fact"), false);
+  });
+
+  it("offers all three memory tools with a userId and none without (FR-010)", async () => {
+    const memoryTools = ["remember_fact", "forget_fact", "forget_preference"];
+    const withUser = await toolNamesFor("oncall-a");
+    const without = await toolNamesFor();
+    for (const name of memoryTools) {
+      assert.ok(withUser.includes(name), name);
+      assert.equal(without.includes(name), false, name);
+    }
+  });
+});
+
+describe("runChat: learning step", () => {
+  const USER = "oncall-a";
+  const MESSAGE = "I'm on the payments team, so checkout alerts are mine. Which are firing?";
+  const LATER = "Which alerts should I look at first?";
+  const FACT = "The engineer is on the payments team and owns the checkout alerts";
+  const learns = learningTurn({ hasLearning: true, fact: FACT });
+
+  /** A store whose remember waits until the test opens the gate. */
+  class GatedMemoryStore extends FakeMemoryStore {
+    open!: () => void;
+    private readonly gate = new Promise<void>((resolve) => {
+      this.open = resolve;
+    });
+    override async remember(userId: string, fact: string) {
+      await this.gate;
+      return super.remember(userId, fact);
+    }
+  }
+
+  const embedder = () =>
+    new FakeEmbedder({ [MESSAGE]: unitVector({ 1: 1 }), [LATER]: scoredAgainst(0, 0.6), [FACT]: unitVector({ 0: 1 }) });
+
+  /**
+   * Settings whose every request gets a model scripted with `turns`. The fake strategy never calls
+   * the model, so the learning step reads the first turn.
+   */
+  function learningSettings(
+    turns: readonly ScriptedTurn[],
+    options: { run?: () => Promise<RunResult>; memories?: FakeMemoryStore; extra?: Partial<AppSettings> } = {},
+  ) {
+    const background = new BackgroundTasks();
+    const memories = options.memories ?? new FakeMemoryStore({ embedder: embedder() });
+    const conversations = new FakeConversationStore();
+    const strategy = recordingStrategy(options.run ?? (async () => completed("checkout-latency is firing")));
+    const models: ScriptedChatModel[] = [];
+    const settings = serviceSettings(strategy, conversations, {
+      background,
+      memories,
+      createDependencies: () => {
+        const model = new ScriptedChatModel(turns);
+        models.push(model);
+        return { model, tools: [] };
+      },
+      ...options.extra,
+    });
+    return { settings, background, memories, conversations, strategy, models };
+  }
+
+  const withUser = (message: string, userId?: string): ChatRequest => ({
+    ...request(message),
+    ...(userId === undefined ? {} : { userId }),
+  });
+
+  /** An outcome without its conversation id, which is a fresh UUID in every store. */
+  const comparable = ({ conversation, ...rest }: ChatOutcome) => ({ ...rest, historyMessages: conversation.historyMessages });
+
+  const facts = async (memories: FakeMemoryStore) =>
+    (await memories.recall(USER, LATER)).map((memory) => memory.fact);
+
+  it("saves the fact after the step settles and logs it", async (t) => {
+    const log = t.mock.method(console, "log", () => {});
+    const { settings, background, memories } = learningSettings([learns]);
+
+    await runChat(settings, withUser(MESSAGE, USER));
+    await background.settled();
+
+    assert.deepEqual(await facts(memories), [FACT]);
+    assert.deepEqual(log.mock.calls.map((call) => call.arguments[0]), [`Learned [memory 1] for ${USER}`]);
+  });
+
+  it("recalls the learned fact in a later conversation (SC-001)", async (t) => {
+    t.mock.method(console, "log", () => {});
+    const { settings, background, strategy } = learningSettings([learns]);
+    await runChat(settings, withUser(MESSAGE, USER));
+    await background.settled();
+
+    const later = await runChat(settings, withUser(LATER, USER));
+
+    assert.equal(later.recalledMemories, 1);
+    assert.match(strategy.inputs[1]!, new RegExp(FACT));
+  });
+
+  it("returns the reply while the step is still pending (SC-003)", async (t) => {
+    t.mock.method(console, "log", () => {});
+    const memories = new GatedMemoryStore({ embedder: embedder() });
+    const { settings, background } = learningSettings([learns], { memories });
+
+    const outcome = await runChat(settings, withUser(MESSAGE, USER));
+
+    assert.equal(outcome.kind, "result");
+    assert.equal(background.pending, 1);
+    assert.deepEqual(await facts(memories), []);
+
+    memories.open();
+    await background.settled();
+    assert.deepEqual(await facts(memories), [FACT]);
+  });
+
+  it("leaves the reply and metrics as they are without the step (FR-007)", async (t) => {
+    t.mock.method(console, "log", () => {});
+    const learning = learningSettings([learns]);
+    const quiet = learningSettings([NO_LEARNING]);
+
+    const withStep = await runChat(learning.settings, withUser(MESSAGE, USER));
+    const without = await runChat(quiet.settings, withUser(MESSAGE, USER));
+    await Promise.all([learning.background.settled(), quiet.background.settled()]);
+
+    assert.deepEqual(comparable(withStep), comparable(without));
+  });
+
+  it("runs no step without a userId", async () => {
+    const { settings, background, models } = learningSettings([learns]);
+    await runChat(settings, withUser(MESSAGE));
+    assert.equal(background.pending, 0);
+    assert.equal(models[0]!.calls, 0);
+  });
+
+  const unfinished: [string, () => Promise<RunResult>, Partial<AppSettings>][] = [
+    [
+      "the iteration limit",
+      async () => ({ stopReason: "iteration_limit", answer: null, trace: [], metrics: { llmCalls: 1, latencyMs: 1 } }),
+      {},
+    ],
+    [
+      "a run that throws",
+      async () => {
+        throw new Error("boom");
+      },
+      {},
+    ],
+    ["a run that times out", () => new Promise<RunResult>(() => {}), { timeoutMs: 20 }],
+  ];
+  for (const [label, run, extra] of unfinished) {
+    it(`runs no step for ${label}`, async () => {
+      const { settings, background, models } = learningSettings([learns], { run, extra });
+      await runChat(settings, withUser(MESSAGE, USER));
+      assert.equal(background.pending, 0);
+      assert.equal(models[0]!.calls, 0);
+    });
+  }
+
+  it("logs a failing step and leaves the outcome and history unchanged (FR-008)", async (t) => {
+    const errors = t.mock.method(console, "error", () => {});
+    const failing = learningSettings([new Error("provider down")]);
+    const quiet = learningSettings([NO_LEARNING]);
+
+    const outcome = await runChat(failing.settings, withUser(MESSAGE, USER));
+    const expected = await runChat(quiet.settings, withUser(MESSAGE, USER));
+    await Promise.all([failing.background.settled(), quiet.background.settled()]);
+
+    assert.deepEqual(comparable(outcome), comparable(expected));
+    assert.deepEqual(errors.mock.calls.map((call) => call.arguments[0]), [
+      `Learning failed for ${USER}: Error: provider down`,
+    ]);
+    assert.deepEqual(await facts(failing.memories), []);
+    assert.equal(failing.conversations.lastMessages(outcome.conversation.id, 12).length, 2);
+  });
+
+  it("warns about a secret without ever logging it", async (t) => {
+    const streams = (["log", "warn", "error"] as const).map((name) => t.mock.method(console, name, () => {}));
+    const { settings, background, memories } = learningSettings([
+      learningTurn({ hasLearning: true, fact: "The engineer's staging DB password is hunter2" }),
+    ]);
+
+    await runChat(settings, withUser(MESSAGE, USER));
+    await background.settled();
+
+    const [, warn] = streams;
+    assert.deepEqual(warn!.mock.calls.map((call) => call.arguments[0]), [`Learning skipped for ${USER}: secret`]);
+    for (const stream of streams) {
+      for (const call of stream.mock.calls) assert.doesNotMatch(call.arguments.map(String).join(" "), /hunter2/);
+    }
+    assert.deepEqual(await facts(memories), []);
+  });
+
+  it("logs a step that times out and stores nothing", async (t) => {
+    const errors = t.mock.method(console, "error", () => {});
+    const { settings, background, memories } = learningSettings([hangingTurn()], { extra: { learningTimeoutMs: 1 } });
+
+    await runChat(settings, withUser(MESSAGE, USER));
+    await background.settled();
+
+    assert.deepEqual(errors.mock.calls.map((call) => call.arguments[0]), [`Learning timed out after 1 ms for ${USER}`]);
+    assert.deepEqual(await facts(memories), []);
   });
 });
