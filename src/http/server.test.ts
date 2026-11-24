@@ -1,79 +1,24 @@
 import assert from "node:assert/strict";
-import type { AddressInfo } from "node:net";
 import { after, describe, it } from "node:test";
 import { FakeConversationStore } from "../testing/fake-conversation-store.ts";
 import { FakeEmbedder, scoredAgainst, unitVector } from "../testing/fake-embedder.ts";
 import { FakeMemoryStore } from "../testing/fake-memory-store.ts";
-import { learningTurn, NO_LEARNING } from "../testing/learning-turns.ts";
+import { learningTurn } from "../testing/learning-turns.ts";
 import { BackgroundTasks } from "./background-tasks.ts";
 import { ScriptedChatModel, toolCallTurn } from "../testing/scripted-chat-model.ts";
 import { VERDICT_TOOL_NAME } from "../agents/reflection.ts";
-import type { StrategyRegistry } from "../agents/index.ts";
-import type { ReasoningStrategy, RunOptions, RunResult } from "../domain/types.ts";
-import { createApp, type AppSettings } from "./server.ts";
+import type { ReasoningStrategy } from "../domain/types.ts";
+import { ChatReply } from "./schemas.ts";
+import {
+  closeServers,
+  completed,
+  fakeStrategy,
+  postChat,
+  settingsFor,
+  startServer,
+} from "../testing/test-server.ts";
 
-const servers: { close(): void }[] = [];
-after(() => {
-  for (const server of servers) server.close();
-});
-
-/** Starts the app on a free port and returns its base URL. */
-async function startServer(settings: AppSettings): Promise<string> {
-  const server = createApp(settings).listen(0);
-  servers.push(server);
-  await new Promise<void>((resolve) => server.once("listening", resolve));
-  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-}
-
-interface FakeStrategy extends ReasoningStrategy {
-  calls: { input: string; options: RunOptions }[];
-}
-
-function fakeStrategy(name: string, result: RunResult | (() => Promise<RunResult>)): FakeStrategy {
-  const calls: FakeStrategy["calls"] = [];
-  return {
-    name,
-    calls,
-    async run(input, options) {
-      calls.push({ input, options });
-      return typeof result === "function" ? result() : result;
-    },
-  };
-}
-
-const completed = (answer: string): RunResult => ({
-  stopReason: "completed",
-  answer,
-  trace: [
-    { type: "action", tool: "list_alerts", args: { status: "firing" } },
-    { type: "observation", tool: "list_alerts", content: "[]" },
-    { type: "answer", content: answer },
-  ],
-  metrics: { llmCalls: 2, latencyMs: 15 },
-});
-
-function settingsFor(strategies: Record<string, ReasoningStrategy>, extra: Partial<AppSettings> = {}): AppSettings {
-  const registry: StrategyRegistry = Object.fromEntries(
-    Object.entries(strategies).map(([name, strategy]) => [name, () => strategy]),
-  );
-  return {
-    registry,
-    // The fake strategies never call the model; only the learning step does, and it learns nothing.
-    createDependencies: () => ({ model: new ScriptedChatModel([NO_LEARNING]), tools: [] }),
-    conversations: new FakeConversationStore(),
-    memories: new FakeMemoryStore({ embedder: new FakeEmbedder() }),
-    ...extra,
-  };
-}
-
-async function postChat(baseUrl: string, body: unknown): Promise<{ status: number; json: any }> {
-  const response = await fetch(`${baseUrl}/chat`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return { status: response.status, json: await response.json() };
-}
+after(closeServers);
 
 describe("POST /chat: successful runs", () => {
   it("runs react by default and replies 200 with answer, trace, and metrics", async () => {
@@ -86,10 +31,70 @@ describe("POST /chat: successful runs", () => {
     assert.equal(json.answer, "Two alerts are firing.");
     assert.equal(json.stopReason, "completed");
     assert.equal(json.trace.length, 3);
-    assert.deepEqual(json.metrics, { llmCalls: 2, latencyMs: 15, historyMessages: 0, recalledMemories: 0 });
+    assert.deepEqual(json.metrics, {
+      llmCalls: 2,
+      latencyMs: 15,
+      historyMessages: 0,
+      recalledMemories: 0,
+      promptTokens: null,
+      // A fake strategy declares no system prompt and the fake dependencies have no tools ("[]").
+      contextBreakdown: { system: 0, tools: 1, history: 0, memories: 0, message: 6, total: 7 },
+    });
     assert.equal(typeof json.conversationId, "string");
     assert.equal(react.calls.length, 1);
     assert.equal(react.calls[0]?.input, "Which alerts are firing?");
+  });
+
+  it("returns a breakdown whose parts add up to its total, with no history or memories on a first message", async () => {
+    const baseUrl = await startServer(settingsFor({ react: fakeStrategy("react", completed("ok")) }));
+
+    const { status, json } = await postChat(baseUrl, { message: "Which alerts are firing?", reflect: false });
+
+    assert.equal(status, 200);
+    const { contextBreakdown: b } = json.metrics;
+    assert.equal(b.history, 0);
+    assert.equal(b.memories, 0);
+    assert.equal(b.total, b.system + b.tools + b.history + b.memories + b.message);
+    assert.ok(ChatReply.safeParse(json).success);
+  });
+
+  it("grows the history estimate on the next turn of the same conversation", async () => {
+    const baseUrl = await startServer(settingsFor({ react: fakeStrategy("react", completed("Two alerts are firing.")) }));
+
+    const first = await postChat(baseUrl, { message: "Which alerts are firing?", reflect: false });
+    const second = await postChat(baseUrl, {
+      message: "And which are resolved?",
+      reflect: false,
+      conversationId: first.json.conversationId,
+    });
+
+    assert.equal(second.status, 200);
+    assert.equal(second.json.metrics.historyMessages, 2);
+    assert.ok(second.json.metrics.contextBreakdown.history > 0);
+    assert.ok(ChatReply.safeParse(second.json).success);
+  });
+
+  it("returns the real prompt tokens the strategy reported", async () => {
+    const measured = fakeStrategy("react", {
+      ...completed("Two alerts are firing."),
+      metrics: { llmCalls: 3, latencyMs: 15, promptTokens: 360 },
+    });
+    const baseUrl = await startServer(settingsFor({ react: measured }));
+
+    const { status, json } = await postChat(baseUrl, { message: "hi", reflect: false });
+
+    assert.equal(status, 200);
+    assert.equal(json.metrics.promptTokens, 360);
+    assert.ok(ChatReply.safeParse(json).success);
+  });
+
+  it("returns null promptTokens, still a 200, when the provider reported no usage", async () => {
+    const baseUrl = await startServer(settingsFor({ react: fakeStrategy("react", completed("ok")) }));
+
+    const { status, json } = await postChat(baseUrl, { message: "hi", reflect: false });
+
+    assert.equal(status, 200);
+    assert.equal(json.metrics.promptTokens, null);
   });
 
   it("runs the strategy named in the body", async () => {
@@ -109,7 +114,7 @@ describe("POST /chat: successful runs", () => {
       stopReason: "iteration_limit",
       answer: null,
       trace: [{ type: "thought", content: "still thinking" }],
-      metrics: { llmCalls: 10, latencyMs: 99 },
+      metrics: { llmCalls: 10, latencyMs: 99, promptTokens: null },
     });
     const baseUrl = await startServer(settingsFor({ react: limited }));
 
@@ -258,7 +263,7 @@ describe("POST /chat: run failures", () => {
       answer: null,
       error: { name: "Error", message: "Provider returned 503" },
       trace: [{ type: "thought", content: "trying" }],
-      metrics: { llmCalls: 1, latencyMs: 5 },
+      metrics: { llmCalls: 1, latencyMs: 5, promptTokens: null },
     });
     const baseUrl = await startServer(settingsFor({ react: failing }));
 
@@ -470,7 +475,17 @@ describe("POST /chat: memory", () => {
 
     assert.equal(status, 200);
     assert.deepEqual(Object.keys(json).sort(), ["answer", "conversationId", "metrics", "stopReason", "trace"]);
-    assert.deepEqual(json.metrics, { llmCalls: 2, latencyMs: 15, historyMessages: 0, recalledMemories: 0 });
+    const { contextBreakdown, ...counts } = json.metrics;
+    assert.deepEqual(counts, {
+      llmCalls: 2,
+      latencyMs: 15,
+      historyMessages: 0,
+      recalledMemories: 0,
+      promptTokens: null,
+    });
+    // With a userId the memory tools join the (empty) tool list, so the tools source is more than "[]".
+    assert.ok(contextBreakdown.tools > 1);
+    assert.ok(ChatReply.safeParse(json).success);
     assert.deepEqual(
       (await memories.recall("oncall-a", QUERY)).map((memory) => memory.fact),
       [LEARNED],

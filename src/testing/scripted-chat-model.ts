@@ -56,6 +56,8 @@ export class ScriptedChatModel extends BaseChatModel {
     const message = new AIMessageChunk({
       content: turn.content,
       tool_calls: turn.tool_calls?.map((toolCall) => ({ ...toolCall, id: `${toolCall.id}-${call}` })),
+      // Like ChatOpenAI, hand the provider's usage to the callbacks and the caller.
+      ...(turn.usage_metadata === undefined ? {} : { usage_metadata: turn.usage_metadata }),
     });
     return { generations: [{ text: message.text, message }] };
   }
@@ -84,4 +86,13 @@ export function toolCallTurn(name: string, args: Record<string, unknown>, text =
 
 export function textTurn(text: string): AIMessage {
   return new AIMessage(text);
+}
+
+/** A scripted reply that reports `inputTokens` of input usage, as a provider would. */
+export function withUsage(turn: AIMessage, inputTokens: number): AIMessage {
+  return new AIMessage({
+    content: turn.content,
+    tool_calls: turn.tool_calls,
+    usage_metadata: { input_tokens: inputTokens, output_tokens: 0, total_tokens: inputTokens },
+  });
 }

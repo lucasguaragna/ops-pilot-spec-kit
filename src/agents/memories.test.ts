@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ReasoningStrategy, RunOptions, RunResult } from "../domain/types.ts";
 import { withHistory } from "./history.ts";
-import { composeMemoryInput, withMemories } from "./memories.ts";
+import { composeMemoryInput, memoryBlock, withMemories } from "./memories.ts";
 
 const facts = [
   { id: 7, fact: "The payments team owns the checkout service" },
@@ -25,6 +25,27 @@ describe("composeMemoryInput", () => {
   });
 });
 
+describe("memoryBlock", () => {
+  it("is empty when nothing was recalled", () => {
+    assert.equal(memoryBlock([]), "");
+  });
+
+  it("is everything composeMemoryInput puts ahead of the input", () => {
+    assert.equal(
+      memoryBlock(facts),
+      "Facts remembered about this engineer (best match first; they may be out of date):\n" +
+        "- [memory 7] The payments team owns the checkout service\n" +
+        "- [memory 3] I prefer answers in short bullet lists\n\n",
+    );
+  });
+
+  it("composeMemoryInput is the block followed by the input, for any facts", () => {
+    for (const recalled of [[], facts, facts.slice(0, 1)]) {
+      assert.equal(composeMemoryInput(recalled, "hello"), memoryBlock(recalled) + "hello");
+    }
+  });
+});
+
 describe("withMemories", () => {
   const recording = () => {
     const calls: { input: string; options: RunOptions }[] = [];
@@ -32,7 +53,7 @@ describe("withMemories", () => {
       name: "react",
       async run(input, options) {
         calls.push({ input, options });
-        return { stopReason: "completed", answer: "ok", trace: [], metrics: { llmCalls: 1, latencyMs: 1 } } as RunResult;
+        return { stopReason: "completed", answer: "ok", trace: [], metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null } } as RunResult;
       },
     };
     return { strategy, calls };
@@ -60,5 +81,23 @@ describe("withMemories", () => {
     const conversationAt = input.indexOf("Conversation so far");
     const requestAt = input.indexOf("Current request: now");
     assert.ok(factsAt === 0 && factsAt < conversationAt && conversationAt < requestAt, input);
+  });
+});
+
+describe("withMemories: systemPrompt", () => {
+  const base = (extra: Partial<ReasoningStrategy>): ReasoningStrategy => ({
+    name: "react",
+    async run() {
+      throw new Error("not called");
+    },
+    ...extra,
+  });
+
+  it("exposes the wrapped strategy's system prompt", () => {
+    assert.equal(withMemories(base({ systemPrompt: "S" }), facts).systemPrompt, "S");
+  });
+
+  it("has no systemPrompt key when the wrapped strategy has none", () => {
+    assert.equal("systemPrompt" in withMemories(base({}), facts), false);
   });
 });

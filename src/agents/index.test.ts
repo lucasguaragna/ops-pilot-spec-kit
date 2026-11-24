@@ -50,7 +50,7 @@ describe("createStrategy with reflection", () => {
     stopReason: "completed",
     answer: "ok",
     trace: [{ type: "answer", content: "ok" }],
-    metrics: { llmCalls: 1, latencyMs: 0 },
+    metrics: { llmCalls: 1, latencyMs: 0, promptTokens: null },
   };
   const base: ReasoningStrategy = { name: "react", run: async () => done };
 

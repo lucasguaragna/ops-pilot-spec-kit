@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ChatReply, ChatRequest, ErrorReply, toIssues } from "./schemas.ts";
+import { ChatReply, ChatRequest, ErrorReply, MetricsSchema, toIssues } from "./schemas.ts";
+
+const breakdown = { system: 100, tools: 200, history: 250, memories: 0, message: 10, total: 560 };
 
 describe("ChatRequest", () => {
   it("accepts a minimal body and defaults the strategy to react", () => {
@@ -60,7 +62,7 @@ describe("ChatRequest: conversationId", () => {
 
 describe("reply schemas: conversation fields", () => {
   const id = "3f0c1f6e-8d1e-4c43-9c8e-5f0a3b2d9a10";
-  const metrics = { llmCalls: 1, latencyMs: 2, historyMessages: 0, recalledMemories: 0 };
+  const metrics = { llmCalls: 1, latencyMs: 2, historyMessages: 0, recalledMemories: 0, promptTokens: null, contextBreakdown: breakdown };
 
   it("requires conversationId and historyMessages on a 200", () => {
     const reply = { answer: "ok", stopReason: "completed", trace: [], metrics, conversationId: id };
@@ -110,11 +112,64 @@ describe("reply schemas: recalledMemories", () => {
       answer: "ok",
       stopReason: "completed",
       trace: [],
-      metrics: { llmCalls: 1, latencyMs: 2, historyMessages: 0, recalledMemories: 3 },
+      metrics: { llmCalls: 1, latencyMs: 2, historyMessages: 0, recalledMemories: 3, promptTokens: null, contextBreakdown: breakdown },
     };
     assert.ok(ChatReply.safeParse(reply).success);
     for (const recalledMemories of [undefined, -1, 1.5]) {
       assert.equal(ChatReply.safeParse({ ...reply, metrics: { ...reply.metrics, recalledMemories } }).success, false);
     }
+  });
+});
+
+describe("reply schemas: promptTokens", () => {
+  const reply = {
+    conversationId: "c1",
+    answer: "ok",
+    stopReason: "completed",
+    trace: [],
+    metrics: { llmCalls: 1, latencyMs: 2, historyMessages: 0, recalledMemories: 0, promptTokens: 450, contextBreakdown: breakdown },
+  };
+
+  it("accepts a non-negative integer and null", () => {
+    assert.ok(ChatReply.safeParse(reply).success);
+    assert.ok(ChatReply.safeParse({ ...reply, metrics: { ...reply.metrics, promptTokens: 0 } }).success);
+    assert.ok(ChatReply.safeParse({ ...reply, metrics: { ...reply.metrics, promptTokens: null } }).success);
+  });
+
+  it("rejects a negative, fractional, or text value, and a missing field", () => {
+    for (const promptTokens of [-1, 1.5, "450", undefined]) {
+      assert.equal(ChatReply.safeParse({ ...reply, metrics: { ...reply.metrics, promptTokens } }).success, false);
+    }
+  });
+});
+
+describe("MetricsSchema: contextBreakdown", () => {
+  const metrics = {
+    llmCalls: 1,
+    latencyMs: 2,
+    historyMessages: 0,
+    recalledMemories: 0,
+    promptTokens: null,
+    contextBreakdown: breakdown,
+  };
+
+  it("accepts a breakdown whose total is the sum of the sources", () => {
+    assert.ok(MetricsSchema.safeParse(metrics).success);
+  });
+
+  it("rejects a total that is not the sum, pointing at the total", () => {
+    const result = MetricsSchema.safeParse({ ...metrics, contextBreakdown: { ...breakdown, total: 561 } });
+    assert.equal(result.success, false);
+    const issue = result.error?.issues[0];
+    assert.deepEqual(issue?.path, ["contextBreakdown", "total"]);
+    assert.equal(issue?.message, "total must equal the sum of the sources");
+  });
+
+  it("rejects a negative or fractional source and a missing breakdown", () => {
+    for (const bad of [-1, 1.5]) {
+      const contextBreakdown = { ...breakdown, system: bad, total: breakdown.total - breakdown.system + bad };
+      assert.equal(MetricsSchema.safeParse({ ...metrics, contextBreakdown }).success, false);
+    }
+    assert.equal(MetricsSchema.safeParse({ ...metrics, contextBreakdown: undefined }).success, false);
   });
 });

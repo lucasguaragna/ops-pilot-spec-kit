@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ReasoningStrategy, RunResult, TraceEvent } from "../domain/types.ts";
-import { ScriptedChatModel, textTurn, toolCallTurn, type ScriptedTurn } from "../testing/scripted-chat-model.ts";
+import { ScriptedChatModel, textTurn, toolCallTurn, withUsage, type ScriptedTurn } from "../testing/scripted-chat-model.ts";
 import {
   nextStep,
   observationsOf,
@@ -24,8 +24,13 @@ const openTrace: TraceEvent[] = [
   { type: "answer", content: "Opened INC-001" },
 ];
 
-function completed(answer: string, trace: TraceEvent[] = [], llmCalls = 2): RunResult {
-  return { stopReason: "completed", answer, trace, metrics: { llmCalls, latencyMs: 0 } };
+function completed(
+  answer: string,
+  trace: TraceEvent[] = [],
+  llmCalls = 2,
+  promptTokens: number | null = null,
+): RunResult {
+  return { stopReason: "completed", answer, trace, metrics: { llmCalls, latencyMs: 0, promptTokens } };
 }
 
 /** A strategy that returns scripted results in order, repeating the last, and records its inputs. */
@@ -148,7 +153,7 @@ describe("withReflection", () => {
       stopReason: "iteration_limit",
       answer: null,
       trace: openTrace.slice(0, 2),
-      metrics: { llmCalls: 4, latencyMs: 0 },
+      metrics: { llmCalls: 4, latencyMs: 0, promptTokens: null },
     };
     const { model, result } = reflect([limited], [approve]);
     const run = await result;
@@ -234,13 +239,70 @@ describe("withReflection", () => {
       answer: null,
       error: { name: "Error", message: "provider down" },
       trace: [],
-      metrics: { llmCalls: 1, latencyMs: 0 },
+      metrics: { llmCalls: 1, latencyMs: 0, promptTokens: null },
     };
     const { result } = reflect([completed("Opened INC-001", openTrace), failed], [reject, approve]);
     const run = await result;
     assert.equal(run.stopReason, "error");
     assert.equal(critiques(run.trace).length, 1);
     assert.equal(run.metrics.llmCalls, 2 + 1 + 1);
+  });
+});
+
+describe("withReflection: systemPrompt", () => {
+  const model = new ScriptedChatModel([approve]);
+
+  it("exposes the base strategy's system prompt", () => {
+    const base = { ...fakeStrategy([completed("x")]), systemPrompt: "S" };
+    assert.equal(withReflection(base, { model }).systemPrompt, "S");
+  });
+
+  it("has no systemPrompt key when the base has none", () => {
+    assert.equal("systemPrompt" in withReflection(fakeStrategy([completed("x")]), { model }), false);
+  });
+});
+
+describe("withReflection: prompt tokens", () => {
+  it("adds the critic call's input tokens to the base attempt's", async () => {
+    const critic = withUsage(approve, 40);
+    const { result } = reflect([completed("Opened INC-001", openTrace, 2, 300)], [critic]);
+    const run = await result;
+    assert.equal(run.metrics.promptTokens, 340);
+  });
+
+  it("sums every attempt and every critic call across a rerun", async () => {
+    const reject = withUsage(verdict({ approved: false, feedback: "Missing step", fix: "rerun" }), 40);
+    const { result } = reflect(
+      [completed("First", openTrace, 2, 300), completed("Second", openTrace, 2, 500)],
+      [reject, withUsage(approve, 60)],
+    );
+    const run = await result;
+    assert.equal(run.metrics.promptTokens, 300 + 40 + 500 + 60);
+  });
+
+  it("counts the rewrite call once, in the reflection counter", async () => {
+    const reject = withUsage(verdict({ approved: false, feedback: "Wrong id", fix: "rewrite" }), 40);
+    const { result } = reflect(
+      [completed("Opened INC-009", openTrace, 2, 300)],
+      [reject, withUsage(textTurn("Opened INC-001"), 70), withUsage(approve, 50)],
+    );
+    const run = await result;
+    assert.equal(run.answer, "Opened INC-001");
+    assert.equal(run.metrics.promptTokens, 300 + 40 + 70 + 50);
+  });
+
+  it("is null when nothing reported usage", async () => {
+    const { result } = reflect([completed("Opened INC-001", openTrace)], [approve]);
+    const run = await result;
+    assert.equal(run.metrics.promptTokens, null);
+  });
+
+  it("does not change the answer, trace, or call count", async () => {
+    const plain = await reflect([completed("Opened INC-001", openTrace)], [approve]).result;
+    const measured = await reflect([completed("Opened INC-001", openTrace, 2, 300)], [withUsage(approve, 40)]).result;
+    assert.equal(measured.answer, plain.answer);
+    assert.deepEqual(measured.trace, plain.trace);
+    assert.equal(measured.metrics.llmCalls, plain.metrics.llmCalls);
   });
 });
 

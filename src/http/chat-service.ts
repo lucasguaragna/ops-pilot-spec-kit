@@ -1,8 +1,9 @@
-import { withHistory } from "../agents/history.ts";
+import { historyBlock, withHistory } from "../agents/history.ts";
 import { createLearningReflector, type LearningOutcome } from "../agents/learning-reflector.ts";
 import { createStrategy } from "../agents/index.ts";
-import { withMemories } from "../agents/memories.ts";
+import { memoryBlock, withMemories } from "../agents/memories.ts";
 import { createMemoryTools } from "../agents/memory-tools.ts";
+import { contextBreakdown, toolDefinitionsText } from "../context/breakdown.ts";
 import type { NewMessage, RecalledMemory } from "../domain/schemas.ts";
 import type { ReasoningStrategy } from "../domain/types.ts";
 import { learningLogLine, messagesToSave, shouldLearn, type ChatOutcome, type RunOutcome } from "./chat-reply.ts";
@@ -113,9 +114,19 @@ export async function runChat(settings: ResolvedSettings, request: ChatRequest):
     );
   }
 
+  // The five texts the agent starts with, as it receives them: measuring them adds no model call.
+  const context = contextBreakdown({
+    system: strategy.systemPrompt ?? "",
+    tools: toolDefinitionsText(tools),
+    history: historyBlock(history),
+    memories: memoryBlock(recalled),
+    message: request.message,
+  });
+
   return {
     ...outcome,
     conversation: { id: conversationId, historyMessages: history.length },
     recalledMemories: recalled.length,
+    context,
   };
 }

@@ -220,6 +220,8 @@ export function createPlanExecuteStrategy(
 
   return {
     name: useReplanner ? "plan-execute" : "plan-execute:no-replanner",
+    // The first model call is the planner's, and its prompt already lists the tools.
+    systemPrompt: plannerPrompt,
     async run(input, { maxIterations, signal }): Promise<RunResult> {
       const started = Date.now();
       const counter = new LlmCallCounter();
@@ -246,7 +248,11 @@ export function createPlanExecuteStrategy(
       })();
 
       const trace = state?.trace ?? [];
-      const metrics = { llmCalls: counter.count, latencyMs: Date.now() - started };
+      const metrics = {
+        llmCalls: counter.count,
+        latencyMs: Date.now() - started,
+        promptTokens: counter.promptTokens,
+      };
       if (outcome.stopReason === "completed") {
         return { stopReason: "completed", answer: state?.answer ?? "", trace, metrics };
       }

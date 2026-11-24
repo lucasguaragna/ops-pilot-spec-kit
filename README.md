@@ -78,6 +78,7 @@ Each feature has a folder in `specs/` with its spec, plan, tasks and contracts.
 | Persistent conversation | `POST /chat` takes an optional `conversationId`. The last 12 messages go into the prompt, saved in the same SQLite file | `007-persistent-conversation` |
 | Semantic memory | `POST /chat` takes an optional `userId`. Up to 3 of that user's facts, matched by meaning with a local `all-MiniLM-L6-v2` model, go into the prompt; the agent saves and forgets facts with two tools | `008-semantic-memory` |
 | Learning reflector | After each completed reply with a `userId`, a background step learns at most one lasting fact from the message, never a one-off request or a secret; `forget_preference` forgets a fact by description | `009-learning-reflector` |
+| Context measurement | `metrics.promptTokens` is the real input token count the provider reported, and `metrics.contextBreakdown` estimates the starting context per source. `scripts/long-conversation.sh` prints both turn by turn | `010-context-measurement` |
 
 ### Tools
 
@@ -255,6 +256,40 @@ reaches the server log, as `Learned [memory N] for <userId>`, or `Learning skipp
 secret` (the fact itself is never logged). A third tool, `forget_preference`, removes the single
 closest fact to a short description, and only when it scores at least 0.5, so the engineer can
 say "forget that I like bullet lists" without knowing the `[memory N]` id.
+
+### Context measurement
+
+A 200 reply, and a `run_failed` 502 that carries metrics, say how big the prompt was:
+
+| Field | Meaning |
+| --- | --- |
+| `metrics.promptTokens` | **Real.** The input tokens the provider reported, summed over every model call of the run: planner, each ReAct step, retries, critic, rewrite. `null` when no call reported usage. The learning step is not included |
+| `metrics.contextBreakdown` | **Estimated.** `system`, `tools`, `history`, `memories`, and `message`, each as characters divided by 4 rounded up, and `total`, their sum. It describes the context the agent *starts* with, after the 12-message and 3-fact limits |
+
+The estimate counts string length, so accents count 1 and an emoji counts 2; it is a teaching
+baseline, not a tokenizer. Tool observations join the context during a run, so they show up in
+`promptTokens` but not in the breakdown. `promptTokens` also adds up every call, so compare the two
+only on a reply with `llmCalls: 1`.
+
+`scripts/long-conversation.sh` sends a fixed series of messages in one conversation to a running
+server and prints one line per turn. It needs `curl` and `jq`:
+
+```sh
+scripts/long-conversation.sh
+OPSPILOT_URL=http://127.0.0.1:3001 TURNS=14 scripts/long-conversation.sh
+```
+
+Example output:
+
+```text
+turn 6 | promptTokens 2210 | history 480 (10 messages)
+turn 7 | promptTokens 2395 | history 526 (12 messages)
+turn 8 | promptTokens 2398 | history 531 (12 messages)
+```
+
+`OPSPILOT_URL` defaults to `http://127.0.0.1:3000` and `TURNS` to 10. A failed turn prints
+`turn N | error <code>` and the run goes on; an unreachable server prints `Cannot reach <url>` and
+exits 1. The `(k messages)` count shows the turn where the history stops growing.
 
 The server validates every reply body against its schema before sending it.
 

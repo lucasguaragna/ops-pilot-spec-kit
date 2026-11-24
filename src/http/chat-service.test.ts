@@ -4,11 +4,17 @@ import { ConversationNotFoundError, EmbeddingError, UnknownStrategyError } from 
 import type { NewMessage } from "../domain/schemas.ts";
 import type { ReasoningStrategy, RunResult } from "../domain/types.ts";
 import { FakeConversationStore } from "../testing/fake-conversation-store.ts";
-import { composeMemoryInput } from "../agents/memories.ts";
+import { historyBlock } from "../agents/history.ts";
+import { composeMemoryInput, memoryBlock } from "../agents/memories.ts";
+import { createReactStrategy } from "../agents/react.ts";
+import { createTools } from "../agents/tools.ts";
+import { toolDefinitionsText } from "../context/breakdown.ts";
+import { estimateTokens } from "../context/tokens.ts";
+import { createStore } from "../store/in-memory-store.ts";
 import { FakeEmbedder, scoredAgainst, unitVector } from "../testing/fake-embedder.ts";
 import { FakeMemoryStore } from "../testing/fake-memory-store.ts";
 import { learningTurn, NO_LEARNING } from "../testing/learning-turns.ts";
-import { hangingTurn, ScriptedChatModel, type ScriptedTurn } from "../testing/scripted-chat-model.ts";
+import { hangingTurn, ScriptedChatModel, textTurn, type ScriptedTurn } from "../testing/scripted-chat-model.ts";
 import { BackgroundTasks } from "./background-tasks.ts";
 import type { ChatOutcome } from "./chat-reply.ts";
 import { runChat, runWithTimeout } from "./chat-service.ts";
@@ -63,7 +69,7 @@ const completed = (answer: string): RunResult => ({
   stopReason: "completed",
   answer,
   trace: [],
-  metrics: { llmCalls: 1, latencyMs: 1 },
+  metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null },
 });
 
 function recordingStrategy(run: () => Promise<RunResult>): ReasoningStrategy & { inputs: string[] } {
@@ -181,7 +187,7 @@ describe("runChat: conversation", () => {
   const unsaved: [string, () => Promise<RunResult>, Partial<AppSettings>][] = [
     [
       "a run that ends at the iteration limit",
-      async () => ({ stopReason: "iteration_limit", answer: null, trace: [], metrics: { llmCalls: 1, latencyMs: 1 } }),
+      async () => ({ stopReason: "iteration_limit", answer: null, trace: [], metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null } }),
       {},
     ],
     [
@@ -191,7 +197,7 @@ describe("runChat: conversation", () => {
         answer: null,
         error: { name: "Error", message: "x" },
         trace: [],
-        metrics: { llmCalls: 1, latencyMs: 1 },
+        metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null },
       }),
       {},
     ],
@@ -475,7 +481,7 @@ describe("runChat: learning step", () => {
   const unfinished: [string, () => Promise<RunResult>, Partial<AppSettings>][] = [
     [
       "the iteration limit",
-      async () => ({ stopReason: "iteration_limit", answer: null, trace: [], metrics: { llmCalls: 1, latencyMs: 1 } }),
+      async () => ({ stopReason: "iteration_limit", answer: null, trace: [], metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null } }),
       {},
     ],
     [
@@ -539,5 +545,131 @@ describe("runChat: learning step", () => {
 
     assert.deepEqual(errors.mock.calls.map((call) => call.arguments[0]), [`Learning timed out after 1 ms for ${USER}`]);
     assert.deepEqual(await facts(memories), []);
+  });
+});
+
+describe("runChat: context breakdown", () => {
+  const MESSAGE = "Which alerts are firing right now on the checkout service?";
+
+  it("measures the real react strategy's sources when there is no history or memory (US2-AS1)", async () => {
+    const tools = [...createTools(createStore())];
+    const model = new ScriptedChatModel([textTurn("Two alerts.")]);
+    const settings = serviceSettings(createReactStrategy({ model, tools }), new FakeConversationStore(), {
+      createDependencies: () => ({ model, tools }),
+    });
+
+    const { context } = await runChat(settings, request(MESSAGE));
+
+    const system = createReactStrategy({ model, tools }).systemPrompt ?? "";
+    assert.ok(system.length > 0);
+    assert.equal(context.system, estimateTokens(system));
+    assert.ok(context.system > 0);
+    // "[]" alone estimates to 1, so more than 1 shows the real definitions were counted.
+    assert.equal(context.tools, estimateTokens(toolDefinitionsText(tools)));
+    assert.ok(context.tools > 1);
+    assert.equal(context.message, estimateTokens(MESSAGE));
+    assert.equal(context.history, 0);
+    assert.equal(context.memories, 0);
+    assert.equal(context.total, context.system + context.tools + context.message);
+  });
+
+  it("measures the system prompt the strategy declares, and 0 when it declares none", async () => {
+    const withPrompt = { ...recordingStrategy(async () => completed("ok")), systemPrompt: "x".repeat(400) };
+    const without = recordingStrategy(async () => completed("ok"));
+
+    const first = await runChat(serviceSettings(withPrompt, new FakeConversationStore()), request("hi"));
+    const second = await runChat(serviceSettings(without, new FakeConversationStore()), request("hi"));
+
+    assert.equal(first.context.system, 100);
+    assert.equal(second.context.system, 0);
+  });
+
+  it("measures the history block of the earlier messages (US2-AS2)", async () => {
+    const store = new FakeConversationStore();
+    const earlier: NewMessage[] = [
+      { role: "user", content: "which alerts are firing on checkout?" },
+      { role: "assistant", content: "ALT-001 is firing." },
+      { role: "user", content: "who owns checkout?" },
+      { role: "assistant", content: "The payments team." },
+      { role: "user", content: "page them" },
+      { role: "assistant", content: "Paged." },
+    ];
+    const id = seed(store, earlier);
+    const strategy = recordingStrategy(async () => completed("ok"));
+
+    const outcome = await runChat(serviceSettings(strategy, store), request("thanks", id));
+
+    assert.equal(outcome.conversation.historyMessages, 6);
+    assert.equal(outcome.context.history, estimateTokens(historyBlock(earlier)));
+    assert.ok(outcome.context.history > 0);
+  });
+
+  it("measures the memory block and counts the memory tools (US2-AS3)", async () => {
+    const QUERY = "who should I page about failed purchases?";
+    const facts = ["The payments team owns the checkout service", "I prefer short bullet lists", "Checkout runs on api-7"];
+    const embedder = new FakeEmbedder({
+      [QUERY]: unitVector({ 0: 1 }),
+      // Different "other" axes keep the facts from looking like duplicates of each other.
+      [facts[0] ?? ""]: scoredAgainst(0, 0.9, 5),
+      [facts[1] ?? ""]: scoredAgainst(0, 0.8, 6),
+      [facts[2] ?? ""]: scoredAgainst(0, 0.7, 7),
+    });
+    const memories = new FakeMemoryStore({ embedder });
+    for (const fact of facts) await memories.remember("oncall-a", fact);
+    const strategy = recordingStrategy(async () => completed("ok"));
+
+    const withUser = await runChat(serviceSettings(strategy, new FakeConversationStore(), { memories }), {
+      ...request(QUERY),
+      userId: "oncall-a",
+    });
+    const anonymous = await runChat(serviceSettings(strategy, new FakeConversationStore(), { memories }), request(QUERY));
+
+    assert.equal(withUser.recalledMemories, 3);
+    const recalled = await memories.recall("oncall-a", QUERY);
+    assert.equal(withUser.context.memories, estimateTokens(memoryBlock(recalled)));
+    assert.ok(withUser.context.memories > 0);
+    assert.equal(anonymous.context.memories, 0);
+    // The fake dependencies have no tools, so any tool tokens come from the memory tools.
+    assert.ok(withUser.context.tools > anonymous.context.tools);
+  });
+
+  it("measures exactly the input the strategy receives: memories, then history, then the message", async () => {
+    const QUERY = "who should I page about failed purchases?";
+    const FACT = "The payments team owns the checkout service";
+    const embedder = new FakeEmbedder({ [QUERY]: unitVector({ 0: 1 }), [FACT]: scoredAgainst(0, 0.6) });
+    const memories = new FakeMemoryStore({ embedder });
+    await memories.remember("oncall-a", FACT);
+    const store = new FakeConversationStore();
+    const earlier: NewMessage[] = [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+    ];
+    const id = seed(store, earlier);
+    const strategy = recordingStrategy(async () => completed("ok"));
+
+    await runChat(serviceSettings(strategy, store, { memories }), { ...request(QUERY, id), userId: "oncall-a" });
+
+    const recalled = await memories.recall("oncall-a", QUERY);
+    assert.equal(strategy.inputs[0], memoryBlock(recalled) + historyBlock(earlier) + QUERY);
+  });
+
+  it("is set on thrown and timeout outcomes too, and adds no model call", async () => {
+    const thrown = recordingStrategy(async () => {
+      throw new Error("boom");
+    });
+    const hung = recordingStrategy(() => new Promise<RunResult>(() => {}));
+    const model = new ScriptedChatModel([textTurn("x")]);
+
+    const first = await runChat(serviceSettings(thrown, new FakeConversationStore()), request("hi"));
+    const second = await runChat(
+      serviceSettings(hung, new FakeConversationStore(), { timeoutMs: 20, createDependencies: () => ({ model, tools: [] }) }),
+      request("hi"),
+    );
+
+    assert.equal(first.kind, "thrown");
+    assert.equal(first.context.message, 1);
+    assert.equal(second.kind, "timeout");
+    assert.equal(second.context.message, 1);
+    assert.equal(model.calls, 0);
   });
 });

@@ -1,5 +1,6 @@
 import type { LearningOutcome } from "../agents/learning-reflector.ts";
 import { toRunError } from "../agents/run-outcome.ts";
+import type { ContextBreakdown } from "../context/breakdown.ts";
 import type { ConversationNotFoundError, UnknownStrategyError } from "../domain/errors.ts";
 import type { NewMessage } from "../domain/schemas.ts";
 import type { Metrics, RunError, RunResult, TraceEvent } from "../domain/types.ts";
@@ -19,13 +20,21 @@ export interface ConversationInfo {
   historyMessages: number;
 }
 
-/** What happened to a request once it reached the service, and how many facts the agent was given. */
-export type ChatOutcome = RunOutcome & { conversation: ConversationInfo; recalledMemories: number };
+/**
+ * What happened to a request once it reached the service, how many facts the agent was given, and
+ * the estimated size of the context it started with.
+ */
+export type ChatOutcome = RunOutcome & {
+  conversation: ConversationInfo;
+  recalledMemories: number;
+  context: ContextBreakdown;
+};
 
 /** The context counts every reply with metrics reports. */
 const contextMetrics = (outcome: ChatOutcome) => ({
   historyMessages: outcome.conversation.historyMessages,
   recalledMemories: outcome.recalledMemories,
+  contextBreakdown: outcome.context,
 });
 
 export interface HttpReply {

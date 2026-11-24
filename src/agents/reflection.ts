@@ -1,10 +1,12 @@
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { z } from "zod";
+import { addPromptTokens } from "../context/tokens.ts";
 import type { ReasoningStrategy, RunResult, TraceEvent } from "../domain/types.ts";
 import { LlmCallCounter } from "./llm-counter.ts";
 import { toRunError } from "./run-outcome.ts";
 import { structured } from "./structured-output.ts";
+import { carrySystemPrompt } from "./system-prompt.ts";
 
 export const DEFAULT_MAX_REFLECTIONS = 2;
 export const VERDICT_TOOL_NAME = "verdict";
@@ -133,19 +135,26 @@ export function withReflection(strategy: ReasoningStrategy, options: ReflectionO
 
   return {
     name: `reflect:${strategy.name}`,
+    ...carrySystemPrompt(strategy),
     async run(input, runOptions): Promise<RunResult> {
       const started = Date.now();
       const counter = new LlmCallCounter();
       const config = { callbacks: [counter], signal: runOptions.signal };
       let trace: TraceEvent[] = [];
       let baseCalls = 0;
-      const metrics = () => ({ llmCalls: baseCalls + counter.count, latencyMs: Date.now() - started });
+      let basePromptTokens: number | null = null;
+      const metrics = () => ({
+        llmCalls: baseCalls + counter.count,
+        latencyMs: Date.now() - started,
+        promptTokens: addPromptTokens(basePromptTokens, counter.promptTokens),
+      });
 
       try {
         let attempt = await strategy.run(input, runOptions);
         for (let regenerations = 0; ; regenerations++) {
           trace = [...trace, ...attempt.trace];
           baseCalls += attempt.metrics.llmCalls;
+          basePromptTokens = addPromptTokens(basePromptTokens, attempt.metrics.promptTokens);
           if (attempt.stopReason !== "completed") return { ...attempt, trace, metrics: metrics() };
 
           const { answer } = attempt;
@@ -181,12 +190,12 @@ export function withReflection(strategy: ReasoningStrategy, options: ReflectionO
               runOptions.signal?.throwIfAborted();
               return keepAnswer(reply);
             }
-            // The rewrite call is counted by the counter, so the attempt adds no calls of its own.
+            // The rewrite call is counted by the counter, so the attempt adds no calls or tokens of its own.
             attempt = {
               stopReason: "completed",
               answer: reply.text,
               trace: [{ type: "answer", content: reply.text }],
-              metrics: { llmCalls: 0, latencyMs: 0 },
+              metrics: { llmCalls: 0, latencyMs: 0, promptTokens: null },
             };
           }
         }

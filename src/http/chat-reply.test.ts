@@ -17,13 +17,14 @@ import {
 import { ChatReply, ErrorReply } from "./schemas.ts";
 import type { LearningOutcome } from "../agents/learning-reflector.ts";
 
-const metrics = { llmCalls: 2, latencyMs: 10 };
+const metrics = { llmCalls: 2, latencyMs: 10, promptTokens: null };
 const trace: RunResult["trace"] = [{ type: "answer", content: "done" }];
 const conversation = { id: "conv-1", historyMessages: 4 };
-const withHistory = { ...metrics, historyMessages: 4, recalledMemories: 2 };
+const context = { system: 100, tools: 200, history: 250, memories: 30, message: 10, total: 590 };
+const withHistory = { ...metrics, historyMessages: 4, recalledMemories: 2, contextBreakdown: context };
 
 /** Attaches the conversation and the recall count every outcome carries once the service has resolved them. */
-const chat = (run: RunOutcome): ChatOutcome => ({ ...run, conversation, recalledMemories: 2 });
+const chat = (run: RunOutcome): ChatOutcome => ({ ...run, conversation, recalledMemories: 2, context });
 
 describe("toHttpReply", () => {
   it("maps a completed result to 200 with the answer, trace, and metrics", () => {
@@ -52,6 +53,71 @@ describe("toHttpReply", () => {
       metrics: withHistory,
     });
     ChatReply.parse(reply.body);
+  });
+});
+
+describe("toHttpReply: contextBreakdown", () => {
+  it("carries the outcome's breakdown on a 200", () => {
+    const result: RunResult = { stopReason: "completed", answer: "done", trace, metrics };
+    const reply = toHttpReply(chat({ kind: "result", result }));
+    assert.deepEqual((reply.body as { metrics: { contextBreakdown: unknown } }).metrics.contextBreakdown, context);
+  });
+
+  it("carries it on a run_failed 502 that has partial metrics", () => {
+    const result: RunResult = {
+      stopReason: "error",
+      answer: null,
+      error: { name: "Error", message: "Provider returned 503" },
+      trace,
+      metrics,
+    };
+    const reply = toHttpReply(chat({ kind: "result", result }));
+    assert.equal(reply.status, 502);
+    assert.deepEqual((reply.body as { metrics: { contextBreakdown: unknown } }).metrics.contextBreakdown, context);
+  });
+});
+
+describe("toHttpReply: promptTokens", () => {
+  it("carries the run's real prompt tokens on a 200", () => {
+    const result: RunResult = {
+      stopReason: "completed",
+      answer: "done",
+      trace,
+      metrics: { ...metrics, promptTokens: 360 },
+    };
+    const reply = toHttpReply(chat({ kind: "result", result }));
+    assert.equal(reply.status, 200);
+    assert.equal((reply.body as { metrics: { promptTokens: number | null } }).metrics.promptTokens, 360);
+    ChatReply.parse(reply.body);
+  });
+
+  it("carries the tokens of the calls made before a run_failed 502", () => {
+    const result: RunResult = {
+      stopReason: "error",
+      answer: null,
+      error: { name: "Error", message: "Provider returned 503" },
+      trace,
+      metrics: { ...metrics, promptTokens: 250 },
+    };
+    const reply = toHttpReply(chat({ kind: "result", result }));
+    assert.equal(reply.status, 502);
+    assert.equal((reply.body as { metrics: { promptTokens: number | null } }).metrics.promptTokens, 250);
+    ErrorReply.parse(reply.body);
+  });
+
+  it("keeps a null count as null", () => {
+    const result: RunResult = { stopReason: "completed", answer: "done", trace, metrics };
+    const reply = toHttpReply(chat({ kind: "result", result }));
+    assert.equal((reply.body as { metrics: { promptTokens: number | null } }).metrics.promptTokens, null);
+  });
+
+  it("gives a thrown run and a timeout no metrics at all", () => {
+    for (const run of [
+      { kind: "thrown", error: new Error("x") },
+      { kind: "timeout", timeoutMs: 1000 },
+    ] as const) {
+      assert.equal("metrics" in toHttpReply(chat(run)).body, false);
+    }
   });
 });
 

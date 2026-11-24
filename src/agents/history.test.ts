@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { NewMessage } from "../domain/schemas.ts";
 import type { ReasoningStrategy, RunOptions, RunResult } from "../domain/types.ts";
-import { composeInput, HISTORY_LIMIT, withHistory } from "./history.ts";
+import { composeInput, HISTORY_LIMIT, historyBlock, withHistory } from "./history.ts";
 
 const history: NewMessage[] = [
   { role: "user", content: "which alerts are firing on checkout?" },
@@ -33,12 +33,31 @@ describe("composeInput", () => {
   });
 });
 
+describe("historyBlock", () => {
+  it("is empty for no history", () => {
+    assert.equal(historyBlock([]), "");
+  });
+
+  it("is everything composeInput puts ahead of the message", () => {
+    assert.equal(
+      historyBlock(history),
+      "Conversation so far (oldest first):\nUser: which alerts are firing on checkout?\nAssistant: ALT-001 is firing.\n\nCurrent request: ",
+    );
+  });
+
+  it("composeInput is the block followed by the message, for any history", () => {
+    for (const earlier of [[], history, history.slice(0, 1)]) {
+      assert.equal(composeInput(earlier, "and now?"), historyBlock(earlier) + "and now?");
+    }
+  });
+});
+
 describe("withHistory", () => {
   const result: RunResult = {
     stopReason: "completed",
     answer: "ok",
     trace: [],
-    metrics: { llmCalls: 1, latencyMs: 1 },
+    metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null },
   };
 
   function recording(): ReasoningStrategy & { calls: { input: string; options: RunOptions }[] } {
@@ -79,5 +98,23 @@ describe("withHistory", () => {
 describe("HISTORY_LIMIT", () => {
   it("is 12 messages", () => {
     assert.equal(HISTORY_LIMIT, 12);
+  });
+});
+
+describe("withHistory: systemPrompt", () => {
+  const base = (extra: Partial<ReasoningStrategy>): ReasoningStrategy => ({
+    name: "react",
+    async run() {
+      throw new Error("not called");
+    },
+    ...extra,
+  });
+
+  it("exposes the wrapped strategy's system prompt", () => {
+    assert.equal(withHistory(base({ systemPrompt: "S" }), history).systemPrompt, "S");
+  });
+
+  it("has no systemPrompt key when the wrapped strategy has none", () => {
+    assert.equal("systemPrompt" in withHistory(base({}), history), false);
   });
 });

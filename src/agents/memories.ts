@@ -1,15 +1,21 @@
 import type { Memory } from "../domain/schemas.ts";
 import type { ReasoningStrategy } from "../domain/types.ts";
+import { carrySystemPrompt } from "./system-prompt.ts";
 
 /**
- * Pure: puts the recalled facts ahead of the input. Each fact carries its id, so the agent can name
- * it to forget_fact. No facts returns the input unchanged, so a request without memories behaves
- * exactly as before.
+ * Pure: everything `composeMemoryInput` puts ahead of the input. Each fact carries its id, so the
+ * agent can name it to forget_fact. No facts is "", so a request without memories behaves exactly
+ * as before.
  */
-export function composeMemoryInput(memories: readonly Pick<Memory, "id" | "fact">[], input: string): string {
-  if (memories.length === 0) return input;
+export function memoryBlock(memories: readonly Pick<Memory, "id" | "fact">[]): string {
+  if (memories.length === 0) return "";
   const facts = memories.map(({ id, fact }) => `- [memory ${id}] ${fact}`).join("\n");
-  return `Facts remembered about this engineer (best match first; they may be out of date):\n${facts}\n\n${input}`;
+  return `Facts remembered about this engineer (best match first; they may be out of date):\n${facts}\n\n`;
+}
+
+/** Pure: puts the recalled facts ahead of the input. */
+export function composeMemoryInput(memories: readonly Pick<Memory, "id" | "fact">[], input: string): string {
+  return memoryBlock(memories) + input;
 }
 
 /**
@@ -22,6 +28,7 @@ export function withMemories(
 ): ReasoningStrategy {
   return {
     name: strategy.name,
+    ...carrySystemPrompt(strategy),
     run: (input, options) => strategy.run(composeMemoryInput(memories, input), options),
   };
 }

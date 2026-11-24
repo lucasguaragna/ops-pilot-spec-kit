@@ -7,7 +7,7 @@ import { lastAnswer, messagesToTrace } from "../trace/from-messages.ts";
 import { LlmCallCounter } from "./llm-counter.ts";
 import { isIterationLimitError, toRunError } from "./run-outcome.ts";
 
-const SYSTEM_PROMPT =
+export const SYSTEM_PROMPT =
   "You are OpsPilot, an on-call copilot for production alerts and incidents. You have live access " +
   "to alerts and incidents only through the tools, so call them before answering. Do every action " +
   "the request asks for, such as opening or resolving incidents, in the order it asks, and only " +
@@ -46,6 +46,7 @@ export interface StrategyDependencies {
 export function createReactStrategy({ model, tools }: StrategyDependencies): ReasoningStrategy {
   return {
     name: "react",
+    systemPrompt: SYSTEM_PROMPT,
     async run(input, { maxIterations, signal }): Promise<RunResult> {
       const started = Date.now();
       const counter = new LlmCallCounter();
@@ -79,7 +80,11 @@ export function createReactStrategy({ model, tools }: StrategyDependencies): Rea
       })();
 
       const trace = messagesToTrace(messages);
-      const metrics = { llmCalls: counter.count, latencyMs: Date.now() - started };
+      const metrics = {
+        llmCalls: counter.count,
+        latencyMs: Date.now() - started,
+        promptTokens: counter.promptTokens,
+      };
       if (outcome.stopReason === "completed") {
         return { stopReason: "completed", answer: lastAnswer(trace), trace, metrics };
       }

@@ -29,6 +29,14 @@ export const TraceEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("answer"), content: z.string() }),
 ]);
 
+/** Estimated tokens of the starting context per source; the total is their sum. */
+export const ContextBreakdownSchema = z
+  .object({ system: Count, tools: Count, history: Count, memories: Count, message: Count, total: Count })
+  .refine((b) => b.total === b.system + b.tools + b.history + b.memories + b.message, {
+    message: "total must equal the sum of the sources",
+    path: ["total"],
+  });
+
 export const MetricsSchema = z.object({
   llmCalls: Count,
   latencyMs: Count,
@@ -36,6 +44,10 @@ export const MetricsSchema = z.object({
   historyMessages: Count,
   /** How many remembered facts the agent was given (0 to 3). HTTP-only, like historyMessages. */
   recalledMemories: Count,
+  /** Real input tokens the provider reported over every model call of the run; null when none did. */
+  promptTokens: Count.nullable(),
+  /** Estimates (characters / 4) of the starting context by source. HTTP-only, like historyMessages. */
+  contextBreakdown: ContextBreakdownSchema,
 });
 
 export const ChatReply = z.object({

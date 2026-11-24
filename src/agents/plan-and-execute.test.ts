@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createStore } from "../store/in-memory-store.ts";
-import { ScriptedChatModel, textTurn, toolCallTurn, type ScriptedTurn } from "../testing/scripted-chat-model.ts";
+import {
+  ScriptedChatModel,
+  textTurn,
+  toolCallTurn,
+  withUsage,
+  type ScriptedTurn,
+} from "../testing/scripted-chat-model.ts";
 import { tool } from "@langchain/core/tools";
 import { END } from "@langchain/langgraph";
 import { z } from "zod";
@@ -161,6 +167,70 @@ describe("plan-execute strategy", () => {
       result.trace.map((event) => event.type),
       ["plan"],
     );
+  });
+});
+
+describe("plan-execute strategy: systemPrompt", () => {
+  it("is the planner prompt with the tool list filled in, for both variants", () => {
+    const model = new ScriptedChatModel([textTurn("x")]);
+    const tools = [...createTools(createStore())];
+    for (const options of [undefined, { replanner: false }]) {
+      const { systemPrompt } = createPlanExecuteStrategy({ model, tools }, options);
+      assert.ok(systemPrompt !== undefined);
+      assert.equal(systemPrompt.includes("{tools}"), false);
+      for (const tool of tools) assert.ok(systemPrompt.includes(`- ${tool.name}: ${tool.description}`));
+    }
+  });
+});
+
+describe("plan-execute strategy: prompt tokens", () => {
+  const script = (usage: (turn: ScriptedTurn, tokens: number) => ScriptedTurn): ScriptedTurn[] =>
+    [
+      plan(["List firing alerts", "Open an incident for the worst one"]),
+      listFiring,
+      replan({ action: "continue" }),
+      openIncident,
+      replan({ action: "finish", answer: "Opened INC-001 for payments-worker." }),
+    ].map((turn, index) => usage(turn, (index + 1) * 100));
+
+  const measured = (turn: ScriptedTurn, tokens: number) => withUsage(turn as never, tokens);
+
+  it("sums the planner, executor, and replanner calls", async () => {
+    const result = await run(script(measured)).result;
+    assert.equal(result.stopReason, "completed");
+    assert.equal(result.metrics.llmCalls, 5);
+    assert.equal(result.metrics.promptTokens, 1500);
+  });
+
+  it("does not change the answer, trace, stop reason, or call count", async () => {
+    const plain = await run(script((turn) => turn)).result;
+    const withTokens = await run(script(measured)).result;
+
+    assert.equal(withTokens.stopReason, plain.stopReason);
+    assert.equal(withTokens.answer, plain.answer);
+    assert.deepEqual(withTokens.trace, plain.trace);
+    assert.equal(withTokens.metrics.llmCalls, plain.metrics.llmCalls);
+  });
+
+  it("is null when no call reported usage", async () => {
+    const result = await run(script((turn) => turn)).result;
+    assert.equal(result.metrics.promptTokens, null);
+  });
+
+  it("sums the same way without a replanner", async () => {
+    const model = new ScriptedChatModel([
+      withUsage(plan(["List firing alerts", "Open an incident for payments-worker"]), 100),
+      withUsage(listFiring, 200),
+      withUsage(openIncident, 300),
+      withUsage(textTurn("Opened INC-001 for payments-worker."), 400),
+    ]);
+    const strategy = createPlanExecuteStrategy(
+      { model, tools: [...createTools(createStore())] },
+      { replanner: false },
+    );
+    const result = await strategy.run("Open an incident for the worst firing alert", { maxIterations: 10 });
+    assert.equal(result.stopReason, "completed");
+    assert.equal(result.metrics.promptTokens, 1000);
   });
 });
 

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createStore } from "../store/in-memory-store.ts";
-import { ScriptedChatModel, textTurn, toolCallTurn } from "../testing/scripted-chat-model.ts";
+import { ScriptedChatModel, textTurn, toolCallTurn, withUsage } from "../testing/scripted-chat-model.ts";
 import { HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import { createReactStrategy, GROUNDING_ATTEMPTS, hasToolResult } from "./react.ts";
+import { createReactStrategy, GROUNDING_ATTEMPTS, hasToolResult, SYSTEM_PROMPT } from "./react.ts";
 import { createTools } from "./tools.ts";
 
 function strategyWith(model: ScriptedChatModel) {
@@ -55,6 +55,67 @@ describe("react strategy", () => {
       result.trace.map((event) => event.type),
       ["action", "observation"],
     );
+  });
+});
+
+describe("react strategy: systemPrompt", () => {
+  it("exposes the instructions of its first model call", () => {
+    assert.equal(strategyWith(new ScriptedChatModel([textTurn("x")])).systemPrompt, SYSTEM_PROMPT);
+    assert.ok(SYSTEM_PROMPT.length > 0);
+  });
+});
+
+describe("react strategy: prompt tokens", () => {
+  const withToolTurn = () => toolCallTurn("list_alerts", { status: "firing" }, "Checking.");
+
+  it("sums the input tokens the provider reported over every model call", async () => {
+    const model = new ScriptedChatModel([
+      withUsage(withToolTurn(), 100),
+      withUsage(toolCallTurn("list_alerts", { status: "all" }), 150),
+      withUsage(textTurn("Done."), 200),
+    ]);
+    const result = await strategyWith(model).run("What is firing?", { maxIterations: 5 });
+
+    assert.equal(result.stopReason, "completed");
+    assert.equal(result.metrics.llmCalls, 3);
+    assert.equal(result.metrics.promptTokens, 450);
+  });
+
+  it("does not change the answer, trace, stop reason, or call count", async () => {
+    const turns = () => [withToolTurn(), textTurn("Three alerts are firing.")];
+    const plain = await strategyWith(new ScriptedChatModel(turns())).run("What is firing?", { maxIterations: 5 });
+    const measured = await strategyWith(
+      new ScriptedChatModel([withUsage(withToolTurn(), 100), withUsage(textTurn("Three alerts are firing."), 120)]),
+    ).run("What is firing?", { maxIterations: 5 });
+
+    assert.equal(measured.stopReason, plain.stopReason);
+    assert.equal(measured.answer, plain.answer);
+    assert.deepEqual(measured.trace, plain.trace);
+    assert.equal(measured.metrics.llmCalls, plain.metrics.llmCalls);
+  });
+
+  it("is null when no call reported usage", async () => {
+    const model = new ScriptedChatModel([withToolTurn(), textTurn("Done.")]);
+    const result = await strategyWith(model).run("What is firing?", { maxIterations: 5 });
+    assert.equal(result.metrics.promptTokens, null);
+  });
+
+  it("sums only the calls that reported usage", async () => {
+    const model = new ScriptedChatModel([withUsage(withToolTurn(), 100), textTurn("Done.")]);
+    const result = await strategyWith(model).run("What is firing?", { maxIterations: 5 });
+    assert.equal(result.metrics.promptTokens, 100);
+  });
+
+  it("covers the calls made before a failure", async () => {
+    const model = new ScriptedChatModel([
+      withUsage(withToolTurn(), 100),
+      withUsage(toolCallTurn("list_alerts", { status: "all" }), 150),
+      new Error("Provider unavailable"),
+    ]);
+    const result = await strategyWith(model).run("What is firing?", { maxIterations: 5 });
+
+    assert.equal(result.stopReason, "error");
+    assert.equal(result.metrics.promptTokens, 250);
   });
 });
 
