@@ -4,8 +4,8 @@ import { dirname } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { z } from "zod";
 import { ConversationNotFoundError, StoreOpenError } from "../domain/errors.ts";
-import { StoredMessage, type Conversation, type NewMessage } from "../domain/schemas.ts";
-import type { ConversationStore } from "./conversation-store.ts";
+import { ConversationSummary, StoredMessage, type Conversation, type NewMessage } from "../domain/schemas.ts";
+import { CoveredCount, parseSummarySave, type ConversationStore } from "./conversation-store.ts";
 import { resolveDbPath } from "./sqlite-ops-store.ts";
 
 /**
@@ -27,6 +27,13 @@ CREATE TABLE IF NOT EXISTS messages (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS messages_by_conversation ON messages (conversation_id, id);
+
+CREATE TABLE IF NOT EXISTS conversation_summaries (
+  conversation_id TEXT PRIMARY KEY REFERENCES conversations(id),
+  summary TEXT NOT NULL CHECK (length(trim(summary, ' ' || char(9) || char(10) || char(13))) > 0),
+  covered_messages INTEGER NOT NULL CHECK (covered_messages > 0),
+  updated_at TEXT NOT NULL
+) STRICT;
 `;
 
 type Row = Record<string, unknown>;
@@ -41,6 +48,14 @@ export const toStoredMessage = (row: Row): StoredMessage =>
     createdAt: row.created_at,
   });
 
+export const toConversationSummary = (row: Row): ConversationSummary =>
+  ConversationSummary.parse({
+    conversationId: row.conversation_id,
+    summary: row.summary,
+    coveredMessages: row.covered_messages,
+    updatedAt: row.updated_at,
+  });
+
 const Limit = z.number().int().nonnegative();
 
 /** SQLite behind `ConversationStore`. Every value goes through a prepared statement; `exec` only sees constant text. */
@@ -53,6 +68,10 @@ export class SqliteConversationStore implements ConversationStore {
   private readonly selectConversation: StatementSync;
   private readonly insertMessage: StatementSync;
   private readonly selectLast: StatementSync;
+  private readonly selectAfter: StatementSync;
+  private readonly selectSummary: StatementSync;
+  private readonly insertSummary: StatementSync;
+  private readonly updateSummary: StatementSync;
 
   constructor(path: string, options: { now?: () => string; newId?: () => string } = {}) {
     this.now = options.now ?? (() => new Date().toISOString());
@@ -73,6 +92,24 @@ export class SqliteConversationStore implements ConversationStore {
           "SELECT id, conversation_id, role, content, created_at FROM messages " +
           "WHERE conversation_id = ? ORDER BY id DESC LIMIT ?" +
           ") ORDER BY id",
+      );
+      // LIMIT -1 means "no limit"; only the OFFSET is bound, and it is checked to be >= 0 first.
+      this.selectAfter = this.db.prepare(
+        "SELECT id, conversation_id, role, content, created_at FROM messages " +
+          "WHERE conversation_id = ? ORDER BY id LIMIT -1 OFFSET ?",
+      );
+      this.selectSummary = this.db.prepare(
+        "SELECT conversation_id, summary, covered_messages, updated_at " +
+          "FROM conversation_summaries WHERE conversation_id = ?",
+      );
+      this.insertSummary = this.db.prepare(
+        "INSERT INTO conversation_summaries " +
+          "(conversation_id, summary, covered_messages, updated_at) " +
+          "VALUES (?, ?, ?, ?) ON CONFLICT(conversation_id) DO NOTHING",
+      );
+      this.updateSummary = this.db.prepare(
+        "UPDATE conversation_summaries SET summary = ?, covered_messages = ?, updated_at = ? " +
+          "WHERE conversation_id = ? AND covered_messages = ?",
       );
     } catch (error) {
       this.db.close();
@@ -102,6 +139,29 @@ export class SqliteConversationStore implements ConversationStore {
     const count = Limit.parse(limit);
     this.requireConversation(conversationId);
     return this.selectLast.all(conversationId, count).map(toStoredMessage);
+  }
+
+  messagesAfter(conversationId: string, covered: number): StoredMessage[] {
+    const skip = CoveredCount.parse(covered);
+    this.requireConversation(conversationId);
+    return this.selectAfter.all(conversationId, skip).map(toStoredMessage);
+  }
+
+  summaryOf(conversationId: string): ConversationSummary | undefined {
+    this.requireConversation(conversationId);
+    const row = this.selectSummary.get(conversationId);
+    return row ? toConversationSummary(row) : undefined;
+  }
+
+  saveSummary(conversationId: string, summary: string, expectedCovered: number, coveredMessages: number): boolean {
+    const text = parseSummarySave(summary, expectedCovered, coveredMessages);
+    this.requireConversation(conversationId);
+    const updatedAt = this.now();
+    const { changes } =
+      expectedCovered === 0
+        ? this.insertSummary.run(conversationId, text, coveredMessages, updatedAt)
+        : this.updateSummary.run(text, coveredMessages, updatedAt, conversationId, expectedCovered);
+    return Number(changes) === 1;
   }
 
   private requireConversation(conversationId: string): void {

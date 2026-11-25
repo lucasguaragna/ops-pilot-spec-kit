@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { NewMessage } from "../domain/schemas.ts";
 import type { ReasoningStrategy, RunOptions, RunResult } from "../domain/types.ts";
-import { composeInput, HISTORY_LIMIT, historyBlock, withHistory } from "./history.ts";
+import {
+  composeInput,
+  HISTORY_WINDOW,
+  historyBlock,
+  MAX_VERBATIM,
+  planHistory,
+  SUMMARY_BATCH,
+  SUMMARY_MAX_TOKENS,
+  withHistory,
+} from "./history.ts";
 
 const history: NewMessage[] = [
   { role: "user", content: "which alerts are firing on checkout?" },
@@ -95,9 +104,107 @@ describe("withHistory", () => {
   });
 });
 
-describe("HISTORY_LIMIT", () => {
-  it("is 12 messages", () => {
-    assert.equal(HISTORY_LIMIT, 12);
+describe("history constants", () => {
+  it("keeps 8 messages word for word, summarizes in batches of 8, and caps the rest at 14", () => {
+    assert.equal(HISTORY_WINDOW, 8);
+    assert.equal(SUMMARY_BATCH, 8);
+    assert.equal(MAX_VERBATIM, 14);
+    assert.equal(SUMMARY_MAX_TOKENS, 300);
+  });
+});
+
+describe("planHistory", () => {
+  const messages = (count: number): NewMessage[] =>
+    Array.from({ length: count }, (_, index) => ({
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: `m${index + 1}`,
+    }));
+  const contents = (list: readonly NewMessage[]) => list.map((message) => message.content);
+
+  it("is not due and gives everything for 0 to 14 uncovered messages", () => {
+    for (const length of [0, 1, 8, 14]) {
+      const plan = planHistory(messages(length));
+      assert.deepEqual(plan.toSummarize, [], `length ${length}`);
+      assert.deepEqual(contents(plan.verbatim), contents(messages(length)), `length ${length}`);
+    }
+  });
+
+  it("is due on a batch boundary: the 8 oldest are summarized and the last 8 stay (lengths 16 and 17)", () => {
+    for (const length of [16, 17]) {
+      const all = messages(length);
+      const plan = planHistory(all);
+      assert.deepEqual(contents(plan.toSummarize), contents(all.slice(0, length - 8)), `length ${length}`);
+      assert.deepEqual(contents(plan.verbatim), contents(all.slice(-8)), `length ${length}`);
+    }
+  });
+
+  it("absorbs everything outside the window at the next boundary after a failure (length 24)", () => {
+    const all = messages(24);
+    const plan = planHistory(all);
+    assert.equal(plan.toSummarize.length, 16);
+    assert.deepEqual(contents(plan.toSummarize), contents(all.slice(0, 16)));
+    assert.deepEqual(contents(plan.verbatim), contents(all.slice(-8)));
+  });
+
+  it("is not due between boundaries and caps the verbatim messages at 14 (lengths 15, 18, 20, 22)", () => {
+    for (const length of [15, 18, 20, 22]) {
+      const all = messages(length);
+      const plan = planHistory(all);
+      assert.deepEqual(plan.toSummarize, [], `length ${length}`);
+      assert.equal(plan.verbatim.length, Math.min(length, 14), `length ${length}`);
+      assert.deepEqual(contents(plan.verbatim), contents(all.slice(-14)), `length ${length}`);
+    }
+  });
+
+  it("is due exactly once in every four exchanges when nothing is ever stored, whatever the parity", () => {
+    for (const start of [0, 1]) {
+      const due: number[] = [];
+      for (let exchange = 0; exchange < 40; exchange++) {
+        if (planHistory(messages(start + exchange * 2)).toSummarize.length > 0) due.push(exchange);
+      }
+      assert.ok(due.length >= 6, `start ${start}`);
+      const gaps = due.slice(1).map((exchange, index) => exchange - (due[index] ?? 0));
+      assert.deepEqual(gaps, gaps.map(() => 4), `start ${start}`);
+    }
+  });
+});
+
+describe("historyBlock with a summary", () => {
+  it("is empty when both the history and the summary are empty", () => {
+    assert.equal(historyBlock([], ""), "");
+    assert.equal(historyBlock([]), "");
+  });
+
+  it("is byte-identical to the history-only block when there is no summary", () => {
+    assert.equal(historyBlock(history), historyBlock(history, ""));
+  });
+
+  it("puts the summary ahead of the conversation block", () => {
+    assert.equal(historyBlock(history, "S\n\n"), "S\n\n" + historyBlock(history));
+  });
+
+  it("gives the summary alone when no message is verbatim", () => {
+    assert.equal(historyBlock([], "S\n\n"), "S\n\n");
+  });
+
+  it("composeInput is the block followed by the message", () => {
+    assert.equal(composeInput(history, "and now?", "S\n\n"), historyBlock(history, "S\n\n") + "and now?");
+    assert.equal(composeInput(history, "m"), composeInput(history, "m", ""));
+  });
+});
+
+describe("withHistory with a summary", () => {
+  it("runs the strategy with the summary, then the history, then the message", async () => {
+    const seen: string[] = [];
+    const inner: ReasoningStrategy = {
+      name: "react",
+      async run(input) {
+        seen.push(input);
+        return { stopReason: "completed", answer: "ok", trace: [], metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null } };
+      },
+    };
+    await withHistory(inner, history, "S\n\n").run("next", { maxIterations: 1 });
+    assert.equal(seen[0], composeInput(history, "next", "S\n\n"));
   });
 });
 

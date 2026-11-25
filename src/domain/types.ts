@@ -4,7 +4,9 @@ export type TraceEvent =
   | { type: "observation"; tool: string; content: string }
   | { type: "plan"; steps: string[] }
   | { type: "critique"; approved: boolean; fix?: "rerun" | "rewrite"; content: string }
-  | { type: "answer"; content: string };
+  | { type: "answer"; content: string }
+  /** Added by the service, never by a strategy: the history was summarized for this request. */
+  | { type: "summarize"; content: string; absorbed: number };
 
 export interface Metrics {
   llmCalls: number;

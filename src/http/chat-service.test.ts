@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, describe, it } from "node:test";
 import { ConversationNotFoundError, EmbeddingError, UnknownStrategyError } from "../domain/errors.ts";
 import type { NewMessage } from "../domain/schemas.ts";
 import type { ReasoningStrategy, RunResult } from "../domain/types.ts";
 import { FakeConversationStore } from "../testing/fake-conversation-store.ts";
-import { historyBlock } from "../agents/history.ts";
+import { composeInput, historyBlock } from "../agents/history.ts";
+import { renderSummary, summaryMessages } from "../agents/history-summarizer.ts";
 import { composeMemoryInput, memoryBlock } from "../agents/memories.ts";
 import { createReactStrategy } from "../agents/react.ts";
 import { createTools } from "../agents/tools.ts";
@@ -14,7 +18,16 @@ import { createStore } from "../store/in-memory-store.ts";
 import { FakeEmbedder, scoredAgainst, unitVector } from "../testing/fake-embedder.ts";
 import { FakeMemoryStore } from "../testing/fake-memory-store.ts";
 import { learningTurn, NO_LEARNING } from "../testing/learning-turns.ts";
-import { hangingTurn, ScriptedChatModel, textTurn, type ScriptedTurn } from "../testing/scripted-chat-model.ts";
+import {
+  hangingTurn,
+  ScriptedChatModel,
+  textTurn,
+  toolCallTurn,
+  withUsage,
+  type ScriptedTurn,
+} from "../testing/scripted-chat-model.ts";
+import { SqliteConversationStore } from "../store/sqlite-conversation-store.ts";
+import type { BaseMessage } from "@langchain/core/messages";
 import { BackgroundTasks } from "./background-tasks.ts";
 import type { ChatOutcome } from "./chat-reply.ts";
 import { runChat, runWithTimeout } from "./chat-service.ts";
@@ -145,7 +158,7 @@ describe("runChat: conversation", () => {
     assert.equal(store.lastMessages(id, 12).length, 4);
   });
 
-  it("uses only the 12 newest earlier messages, oldest first", async () => {
+  it("gives at most the 14 newest word for word, oldest first, before any summary", async () => {
     const store = new FakeConversationStore();
     const id = seed(
       store,
@@ -159,10 +172,10 @@ describe("runChat: conversation", () => {
     const outcome = await runChat(serviceSettings(strategy, store), request("next", id));
 
     const input = strategy.inputs[0] ?? "";
-    assert.equal(outcome.conversation.historyMessages, 12);
-    assert.ok(!input.includes("msg-08"));
-    assert.ok(input.includes("msg-09"));
-    assert.ok(input.indexOf("msg-09") < input.indexOf("msg-20"));
+    assert.equal(outcome.conversation.historyMessages, 14);
+    assert.ok(!input.includes("msg-06"));
+    assert.ok(input.includes("msg-07"));
+    assert.ok(input.indexOf("msg-07") < input.indexOf("msg-20"));
   });
 
   it("uses every message when there are fewer than the limit", async () => {
@@ -170,18 +183,6 @@ describe("runChat: conversation", () => {
     const id = seed(store, Array.from({ length: 5 }, (_, index) => ({ role: "user" as const, content: `m${index}` })));
     const outcome = await runChat(serviceSettings(recordingStrategy(async () => completed("ok")), store), request("next", id));
     assert.equal(outcome.conversation.historyMessages, 5);
-  });
-
-  it("honours an explicit historyLimit", async () => {
-    const store = new FakeConversationStore();
-    const id = seed(store, Array.from({ length: 6 }, (_, index) => ({ role: "user" as const, content: `m${index}` })));
-    const settings = serviceSettings(recordingStrategy(async () => completed("ok")), store, { historyLimit: 3 });
-    assert.equal((await runChat(settings, request("next", id))).conversation.historyMessages, 3);
-  });
-
-  it("defaults the history window to 12", () => {
-    const settings = serviceSettings(recordingStrategy(async () => completed("ok")), new FakeConversationStore());
-    assert.equal(settings.historyLimit, 12);
   });
 
   const unsaved: [string, () => Promise<RunResult>, Partial<AppSettings>][] = [
@@ -242,6 +243,467 @@ describe("runChat: conversation", () => {
       return error instanceof ConversationNotFoundError && error.conversationId === "missing";
     });
     assert.deepEqual(strategy.inputs, []);
+  });
+});
+
+const SUMMARY_TEXT = "- Decision: page the payments team\n- checkout-api runs on eu-west\n- Open: INC-002 stays open";
+
+/** `count` alternating messages m1, m2, ... */
+const conversationOf = (count: number): NewMessage[] =>
+  Array.from({ length: count }, (_, index) => ({
+    role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+    content: `m${index + 1}`,
+  }));
+
+describe("runChat: summary in context", () => {
+  it("gives the stored summary, then the last 8 messages, then the request (US1-AS1)", async () => {
+    const store = new FakeConversationStore();
+    const messages = conversationOf(16);
+    const id = seed(store, messages);
+    store.saveSummary(id, SUMMARY_TEXT, 0, 8);
+    const strategy = recordingStrategy(async () => completed("ok"));
+
+    const outcome = await runChat(serviceSettings(strategy, store), request("next", id));
+
+    const rendered = renderSummary(SUMMARY_TEXT);
+    assert.equal(strategy.inputs[0], rendered + historyBlock(messages.slice(8)) + "next");
+    assert.equal(outcome.conversation.historyMessages, 8);
+    assert.equal(outcome.context.history, estimateTokens(historyBlock(messages.slice(8), rendered)));
+  });
+
+  it("leaves the input byte-identical when there is no summary and 8 or fewer earlier messages (US1-AS2)", async () => {
+    const store = new FakeConversationStore();
+    const messages = conversationOf(6);
+    const id = seed(store, messages);
+    const strategy = recordingStrategy(async () => completed("ok"));
+
+    await runChat(serviceSettings(strategy, store), request("next", id));
+
+    assert.equal(strategy.inputs[0], composeInput(messages, "next"));
+  });
+
+  it("gives all 14 uncovered messages word for word when no summary exists yet", async () => {
+    const store = new FakeConversationStore();
+    const messages = conversationOf(14);
+    const id = seed(store, messages);
+    const strategy = recordingStrategy(async () => completed("ok"));
+
+    const outcome = await runChat(serviceSettings(strategy, store), request("next", id));
+
+    assert.equal(outcome.conversation.historyMessages, 14);
+    assert.equal(strategy.inputs[0], composeInput(messages, "next"));
+  });
+
+  it("puts the user's remembered facts first, then the summary, then the messages (US1-AS4)", async () => {
+    const QUERY = "who should I page?";
+    const FACT = "The payments team owns the checkout service";
+    const embedder = new FakeEmbedder({ [QUERY]: unitVector({ 0: 1 }), [FACT]: scoredAgainst(0, 0.6) });
+    const memories = new FakeMemoryStore({ embedder });
+    await memories.remember("oncall-a", FACT);
+    const store = new FakeConversationStore();
+    const messages = conversationOf(16);
+    const id = seed(store, messages);
+    store.saveSummary(id, SUMMARY_TEXT, 0, 8);
+    const strategy = recordingStrategy(async () => completed("ok"));
+
+    await runChat(serviceSettings(strategy, store, { memories }), { ...request(QUERY, id), userId: "oncall-a" });
+
+    const expected =
+      memoryBlock([{ id: 1, fact: FACT }]) + renderSummary(SUMMARY_TEXT) + historyBlock(messages.slice(8)) + QUERY;
+    assert.equal(strategy.inputs[0], expected);
+  });
+});
+
+describe("runChat: summarization", () => {
+  const DECISION = "- Decision: page the payments team";
+  const summary = (open: string): string => `${DECISION}\n- checkout-api runs on eu-west\n- Open: ${open}`;
+  const SUMMARY_1 = summary("INC-001, INC-002");
+  const SUMMARY_2 = summary("INC-002, INC-003");
+  const SUMMARY_3 = summary("INC-003");
+  const summaryTurn = (text: string, inputTokens?: number): ScriptedTurn => {
+    const turn = textTurn(text);
+    return inputTokens === undefined ? turn : withUsage(turn, inputTokens);
+  };
+
+  /** The messages of the first `exchanges` exchanges: q1, a1, q2, a2, ... */
+  const earlier = (exchanges: number): NewMessage[] =>
+    Array.from({ length: exchanges * 2 }, (_, index) => ({
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: `${index % 2 === 0 ? "q" : "a"}${Math.floor(index / 2) + 1}`,
+    }));
+
+  /** A strategy that answers a1, a2, ... and keeps every input. */
+  function answering(): ReasoningStrategy & { inputs: string[] } {
+    const inputs: string[] = [];
+    return {
+      name: "react",
+      inputs,
+      async run(input) {
+        inputs.push(input);
+        return completed(`a${inputs.length}`);
+      },
+    };
+  }
+
+  /** Settings over a scripted model that answers the summarizer, and every prompt it was sent. */
+  function summarizing(turns: readonly ScriptedTurn[], extra: Partial<AppSettings> = {}, strategy: ReasoningStrategy = answering()) {
+    const model = new ScriptedChatModel(turns);
+    const prompts: BaseMessage[][] = [];
+    model.callbacks = [
+      {
+        handleChatModelStart: (_llm: unknown, batch: BaseMessage[][]) => {
+          prompts.push(...batch);
+        },
+      },
+    ];
+    const store = (extra.conversations as FakeConversationStore | undefined) ?? new FakeConversationStore();
+    const settings = resolveSettings({
+      registry: { react: () => strategy },
+      createDependencies: () => ({ model, tools: [] }),
+      conversations: store,
+      memories: new FakeMemoryStore({ embedder: new FakeEmbedder() }),
+      ...extra,
+    });
+    return { settings, model, prompts, store, strategy: strategy as ReasoningStrategy & { inputs: string[] } };
+  }
+
+  /** Runs `count` exchanges in one conversation; returns every outcome and the model's call count after each. */
+  async function drive(settings: ReturnType<typeof resolveSettings>, model: ScriptedChatModel, count: number) {
+    const outcomes: ChatOutcome[] = [];
+    const callsAfter: number[] = [];
+    let id: string | undefined;
+    for (let n = 1; n <= count; n++) {
+      const outcome = await runChat(settings, request(`q${n}`, id));
+      id = outcome.conversation.id;
+      outcomes.push(outcome);
+      callsAfter.push(model.calls);
+    }
+    return { outcomes, callsAfter, id: id as string };
+  }
+
+  it("summarizes only on exchanges 9, 13, and 17 over 20 exchanges (SC-002)", async () => {
+    const { settings, model, store } = summarizing([summaryTurn(SUMMARY_1), summaryTurn(SUMMARY_2), summaryTurn(SUMMARY_3)]);
+
+    const { callsAfter, id } = await drive(settings, model, 20);
+
+    const callingExchanges = callsAfter.flatMap((calls, index) => (calls > (callsAfter[index - 1] ?? 0) ? [index + 1] : []));
+    assert.deepEqual(callingExchanges, [9, 13, 17]);
+    assert.equal(model.calls, 3);
+    assert.equal(store.summaryOf(id)?.coveredMessages, 24);
+  });
+
+  it("gives each call the previous summary and exactly the messages to absorb", async () => {
+    const { settings, model, prompts } = summarizing([summaryTurn(SUMMARY_1), summaryTurn(SUMMARY_2), summaryTurn(SUMMARY_3)]);
+
+    await drive(settings, model, 17);
+
+    const all = earlier(20);
+    assert.equal(prompts.length, 3);
+    const humanText = (index: number) => String(prompts[index]?.[1]?.content);
+    assert.equal(humanText(0), String(summaryMessages(undefined, all.slice(0, 8))[1]?.content));
+    assert.equal(humanText(1), String(summaryMessages(SUMMARY_1, all.slice(8, 16))[1]?.content));
+    assert.equal(humanText(2), String(summaryMessages(SUMMARY_2, all.slice(16, 24))[1]?.content));
+    assert.match(humanText(0), /^Previous summary:\n\(none\)\n\n/);
+  });
+
+  it("stores coverage 8, then 16, then 24, with the text the model returned (merge)", async () => {
+    const { settings, model, store } = summarizing([summaryTurn(SUMMARY_1), summaryTurn(SUMMARY_2), summaryTurn(SUMMARY_3)]);
+    let id: string | undefined;
+    const seen: { covered: number | undefined; summary: string | undefined }[] = [];
+    for (let n = 1; n <= 17; n++) {
+      id = (await runChat(settings, request(`q${n}`, id))).conversation.id;
+      if (n === 9 || n === 13 || n === 17) {
+        const stored = store.summaryOf(id);
+        seen.push({ covered: stored?.coveredMessages, summary: stored?.summary });
+      }
+    }
+    assert.deepEqual(seen, [
+      { covered: 8, summary: SUMMARY_1 },
+      { covered: 16, summary: SUMMARY_2 },
+      { covered: 24, summary: SUMMARY_3 },
+    ]);
+    assert.ok(model.calls === 3);
+  });
+
+  it("gives exchange 9's agent the new summary and only the last 8 messages", async () => {
+    const { settings, model, strategy } = summarizing([summaryTurn(SUMMARY_1)]);
+
+    await drive(settings, model, 9);
+
+    assert.equal(strategy.inputs[8], renderSummary(SUMMARY_1) + historyBlock(earlier(8).slice(8)) + "q9");
+  });
+
+  it("does not summarize below the threshold: 14 uncovered messages, no call, nothing stored (US2-AS1)", async () => {
+    const store = new FakeConversationStore();
+    const id = seed(store, earlier(7));
+    const { settings, model } = summarizing([summaryTurn(SUMMARY_1)], { conversations: store });
+
+    await runChat(settings, request("q8", id));
+
+    assert.equal(model.calls, 0);
+    assert.equal(store.summaryOf(id), undefined);
+  });
+
+  describe("failures", () => {
+    it("thrown: the reply is the agent's, the 14 newest go word for word, and the retry waits for exchange 13 (US3-AS3, C1)", async () => {
+      const { settings, model, store, strategy, prompts } = summarizing([new Error("provider down"), summaryTurn(SUMMARY_1)]);
+
+      const { outcomes, callsAfter, id } = await drive(settings, model, 13);
+
+      const ninth = outcomes[8];
+      assert.ok(ninth?.kind === "result" && ninth.result.stopReason === "completed" && ninth.result.answer === "a9");
+      assert.equal(strategy.inputs[8], historyBlock(earlier(8).slice(-14)) + "q9");
+      assert.equal(ninth?.conversation.historyMessages, 14);
+      // Exchanges 10, 11, and 12 make no call; exchange 13 tries again and absorbs all 16 outside the window.
+      assert.deepEqual(callsAfter.slice(8, 13), [1, 1, 1, 1, 2]);
+      assert.equal(store.summaryOf(id)?.coveredMessages, 16);
+      assert.equal(String(prompts[1]?.[1]?.content), String(summaryMessages(undefined, earlier(12).slice(0, 16))[1]?.content));
+    });
+
+    it("every attempt fails: 1 call on each of exchanges 9, 13, and 17, and the context never exceeds 14 (SC-002, SC-003)", async () => {
+      const { settings, model, store } = summarizing([new Error("provider down")]);
+
+      const { outcomes, id } = await drive(settings, model, 20);
+
+      assert.equal(model.calls, 3);
+      assert.ok(outcomes.every((outcome) => outcome.kind === "result"));
+      assert.ok(outcomes.every((outcome) => outcome.conversation.historyMessages <= 14));
+      assert.equal(store.summaryOf(id), undefined);
+    });
+
+    it("timeout: the run goes on, the call is counted, and nothing is stored", async () => {
+      const store = new FakeConversationStore();
+      const id = seed(store, earlier(8));
+      const { settings, model } = summarizing([hangingTurn()], { conversations: store, summaryTimeoutMs: 20 });
+
+      const outcome = await runChat(settings, request("q9", id));
+
+      assert.ok(outcome.kind === "result" && outcome.result.stopReason === "completed");
+      assert.equal(model.calls, 1);
+      assert.equal(outcome.kind === "result" ? outcome.result.metrics.llmCalls : -1, 1 + 1);
+      assert.equal(store.summaryOf(id), undefined);
+      assert.equal(outcome.conversation.historyMessages, 14);
+    });
+
+    it("empty: a blank reply is a failure that stores nothing", async () => {
+      const store = new FakeConversationStore();
+      const id = seed(store, earlier(8));
+      const { settings } = summarizing([summaryTurn("  \n ")], { conversations: store });
+
+      const outcome = await runChat(settings, request("q9", id));
+
+      assert.equal(store.summaryOf(id), undefined);
+      assert.equal(outcome.conversation.historyMessages, 14);
+    });
+
+    it("empty: only secret lines is a failure that stores nothing", async () => {
+      const store = new FakeConversationStore();
+      const id = seed(store, earlier(8));
+      const { settings } = summarizing(
+        [summaryTurn("- The staging DB password is hunter2\n- api_key=abc123")],
+        { conversations: store },
+      );
+
+      await runChat(settings, request("q9", id));
+
+      assert.equal(store.summaryOf(id), undefined);
+    });
+
+    it("conflict: a lost compare-and-swap keeps the previous summary for the agent", async () => {
+      class LosingStore extends FakeConversationStore {
+        override saveSummary(): boolean {
+          return false;
+        }
+      }
+      const store = new LosingStore();
+      const id = seed(store, earlier(12));
+      FakeConversationStore.prototype.saveSummary.call(store, id, SUMMARY_1, 0, 8);
+      const { settings, strategy } = summarizing([summaryTurn(SUMMARY_3)], { conversations: store });
+
+      await runChat(settings, request("q13", id));
+
+      const input = strategy.inputs[0] ?? "";
+      assert.ok(input.startsWith(renderSummary(SUMMARY_1)));
+      assert.ok(!input.includes("INC-003"));
+    });
+
+    it("a store that throws on save is a failure, not a thrown request", async () => {
+      class BrokenStore extends FakeConversationStore {
+        override saveSummary(): boolean {
+          throw new Error("disk full");
+        }
+      }
+      const store = new BrokenStore();
+      const id = seed(store, earlier(8));
+      const { settings } = summarizing([summaryTurn(SUMMARY_1)], { conversations: store });
+
+      const outcome = await runChat(settings, request("q9", id));
+
+      assert.equal(outcome.kind, "result");
+    });
+
+    it("recall failure: throws before any summarization call", async () => {
+      const store = new FakeConversationStore();
+      const id = seed(store, earlier(8));
+      const memories = new FakeMemoryStore({ embedder: new FakeEmbedder({}, { failing: true }) });
+      const { settings, model } = summarizing([summaryTurn(SUMMARY_1)], { conversations: store, memories });
+
+      await assert.rejects(runChat(settings, { ...request("q9", id), userId: "oncall-a" }), EmbeddingError);
+      assert.equal(model.calls, 0);
+    });
+  });
+
+  describe("a run that fails after the summary was stored (G1)", () => {
+    const errorResult = (): RunResult => ({
+      stopReason: "error",
+      answer: null,
+      error: { name: "Error", message: "tool failed" },
+      trace: [{ type: "answer", content: "partial" }],
+      metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null },
+    });
+
+    it("keeps the stored summary, puts the event first in the trace, and uses the summary on the next request", async () => {
+      const store = new FakeConversationStore();
+      const id = seed(store, earlier(8));
+      let failing = true;
+      const strategy = recordingStrategy(async () => (failing ? errorResult() : completed("ok")));
+      const { settings } = summarizing([summaryTurn(SUMMARY_1)], { conversations: store }, strategy);
+
+      const first = await runChat(settings, request("q9", id));
+
+      assert.ok(first.kind === "result" && first.result.stopReason === "error");
+      assert.equal(first.kind === "result" ? first.result.trace[0]?.type : undefined, "summarize");
+      assert.equal(store.summaryOf(id)?.coveredMessages, 8);
+
+      failing = false;
+      await runChat(settings, request("q9 again", id));
+      assert.ok((strategy.inputs[1] ?? "").startsWith(renderSummary(SUMMARY_1)));
+    });
+
+    it("keeps the stored summary when the run times out (504)", async () => {
+      const store = new FakeConversationStore();
+      const id = seed(store, earlier(8));
+      const strategy = recordingStrategy(() => new Promise<RunResult>(() => {}));
+      const { settings } = summarizing([summaryTurn(SUMMARY_1)], { conversations: store, timeoutMs: 20 }, strategy);
+
+      const outcome = await runChat(settings, request("q9", id));
+
+      assert.equal(outcome.kind, "timeout");
+      assert.equal(store.summaryOf(id)?.coveredMessages, 8);
+    });
+  });
+
+  it("keeps an early decision in the agent's context at exchange 20 (G2, SC-001)", async () => {
+    const { settings, model, strategy } = summarizing([summaryTurn(SUMMARY_1), summaryTurn(SUMMARY_2), summaryTurn(SUMMARY_3)]);
+
+    await drive(settings, model, 20);
+
+    const input = strategy.inputs[19] ?? "";
+    assert.ok(input.startsWith(renderSummary(SUMMARY_3)));
+    assert.ok(input.includes(DECISION));
+    // The message that stated it left the verbatim messages long ago.
+    assert.ok(!input.includes("User: q1\n"));
+  });
+
+  describe("metrics", () => {
+    it("adds a stored step's calls and tokens to the reply's metrics", async () => {
+      const store = new FakeConversationStore();
+      const id = seed(store, earlier(8));
+      const { settings } = summarizing([summaryTurn(SUMMARY_1, 120)], { conversations: store });
+
+      const outcome = await runChat(settings, request("q9", id));
+
+      assert.ok(outcome.kind === "result");
+      assert.equal(outcome.result.metrics.llmCalls, 1 + 1);
+      assert.equal(outcome.result.metrics.promptTokens, 120);
+    });
+
+    it("counts the calls and tokens of a failed step too", async () => {
+      const store = new FakeConversationStore();
+      const id = seed(store, earlier(8));
+      const { settings } = summarizing([summaryTurn("", 50)], { conversations: store });
+
+      const outcome = await runChat(settings, request("q9", id));
+
+      assert.ok(outcome.kind === "result");
+      assert.equal(outcome.result.metrics.llmCalls, 1 + 1);
+      assert.equal(outcome.result.metrics.promptTokens, 50);
+    });
+  });
+
+  describe("log lines", () => {
+    it("writes one log line for the request that summarized, with no item text", async (t) => {
+      const log = t.mock.method(console, "log", () => {});
+      const warn = t.mock.method(console, "warn", () => {});
+      const error = t.mock.method(console, "error", () => {});
+      const store = new FakeConversationStore();
+      const id = seed(store, earlier(8));
+      const { settings } = summarizing([summaryTurn(SUMMARY_1)], { conversations: store });
+
+      await runChat(settings, request("q9", id));
+
+      assert.equal(log.mock.callCount(), 1);
+      assert.match(String(log.mock.calls[0]?.arguments[0]), new RegExp(`^Summarized 8 messages for conversation ${id}$`));
+      assert.equal(warn.mock.callCount() + error.mock.callCount(), 0);
+      assert.doesNotMatch(String(log.mock.calls[0]?.arguments[0]), /payments|INC-001/);
+    });
+
+    it("writes one error line for a failed summarization", async (t) => {
+      const log = t.mock.method(console, "log", () => {});
+      const error = t.mock.method(console, "error", () => {});
+      const store = new FakeConversationStore();
+      const id = seed(store, earlier(8));
+      const { settings } = summarizing([new Error("provider down")], { conversations: store });
+
+      await runChat(settings, request("q9", id));
+
+      assert.equal(log.mock.callCount(), 0);
+      assert.equal(error.mock.callCount(), 1);
+      assert.equal(String(error.mock.calls[0]?.arguments[0]), `Summary failed for conversation ${id}: Error: provider down`);
+    });
+
+    it("writes nothing below the threshold", async (t) => {
+      const log = t.mock.method(console, "log", () => {});
+      const warn = t.mock.method(console, "warn", () => {});
+      const error = t.mock.method(console, "error", () => {});
+      const store = new FakeConversationStore();
+      const id = seed(store, earlier(4));
+      const { settings } = summarizing([summaryTurn(SUMMARY_1)], { conversations: store });
+
+      await runChat(settings, request("q5", id));
+
+      assert.equal(log.mock.callCount() + warn.mock.callCount() + error.mock.callCount(), 0);
+    });
+  });
+
+  describe("restart (SC-005)", () => {
+    const dirs: string[] = [];
+    after(() => {
+      for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("makes no summarization call after a restart and still gives the agent the stored summary", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "opspilot-summary-"));
+      dirs.push(dir);
+      const path = join(dir, "test.db");
+
+      const first = new SqliteConversationStore(path);
+      const id = seed(first as unknown as FakeConversationStore, earlier(8));
+      const run = summarizing([summaryTurn(SUMMARY_1)], { conversations: first as unknown as FakeConversationStore });
+      await runChat(run.settings, request("q9", id));
+      assert.equal(run.model.calls, 1);
+      first.close();
+
+      const second = new SqliteConversationStore(path);
+      try {
+        const again = summarizing([summaryTurn(SUMMARY_2)], { conversations: second as unknown as FakeConversationStore });
+        await runChat(again.settings, request("q10", id));
+        assert.equal(again.model.calls, 0);
+        assert.ok((again.strategy.inputs[0] ?? "").startsWith(renderSummary(SUMMARY_1)));
+      } finally {
+        second.close();
+      }
+    });
   });
 });
 

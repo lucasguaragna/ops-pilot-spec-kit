@@ -98,13 +98,13 @@ describe("scripts/long-conversation.sh", { skip: !hasTools && "needs bash, curl,
     assert.match(react.calls[2]?.input ?? "", /^Conversation so far/);
   });
 
-  it("shows where the history stops growing at the 12-message limit (SC-003)", async () => {
+  it("shows the history growing to 14 messages before the first summary (SC-003)", async () => {
     const baseUrl = await startServer(settingsFor({ react: turnByTurn([ok(500)]) }));
 
     const run = await runScript({ OPSPILOT_URL: baseUrl, TURNS: "8" });
 
     const counts = lines(run).map((line) => /\((\d+) messages\)/.exec(line)?.[1]);
-    assert.deepEqual(counts, ["0", "2", "4", "6", "8", "10", "12", "12"]);
+    assert.deepEqual(counts, ["0", "2", "4", "6", "8", "10", "12", "14"]);
   });
 
   it("prints n/a when the server reports no promptTokens (US3-AS3)", async () => {

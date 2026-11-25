@@ -54,6 +54,42 @@ describe("SQLite conversation constraints", () => {
       /CHECK constraint failed/,
     );
   });
+
+  describe("conversation_summaries", () => {
+    const insertSummary = (db: DatabaseSync, conversationId: string, summary: string, covered: number) =>
+      db
+        .prepare(
+          "INSERT INTO conversation_summaries (conversation_id, summary, covered_messages, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .run(conversationId, summary, covered, AT);
+
+    it("accepts a well-formed row", () => {
+      const db = rawDatabase();
+      insertSummary(db, "c1", "- a", 8);
+    });
+
+    it("rejects a coverage of 0", () => {
+      const db = rawDatabase();
+      assert.throws(() => insertSummary(db, "c1", "- a", 0), /CHECK constraint failed/);
+    });
+
+    it("rejects a blank summary", () => {
+      const db = rawDatabase();
+      assert.throws(() => insertSummary(db, "c1", "", 8), /CHECK constraint failed/);
+      assert.throws(() => insertSummary(db, "c1", "  \n ", 8), /CHECK constraint failed/);
+    });
+
+    it("rejects a summary for a conversation that does not exist", () => {
+      const db = rawDatabase();
+      assert.throws(() => insertSummary(db, "ghost", "- a", 8), FAILED);
+    });
+
+    it("allows one summary per conversation", () => {
+      const db = rawDatabase();
+      insertSummary(db, "c1", "- a", 8);
+      assert.throws(() => insertSummary(db, "c1", "- b", 16), /UNIQUE constraint failed|PRIMARY KEY/);
+    });
+  });
 });
 
 describe("SqliteConversationStore on a file", () => {
@@ -98,6 +134,78 @@ describe("SqliteConversationStore on a file", () => {
       assert.deepEqual(third.lastMessages(id, 12).map((message) => message.content), ["kept"]);
     } finally {
       third.close();
+    }
+  });
+
+  it("returns the same summary after a restart (FR-002)", () => {
+    const path = tempFile();
+    const summary = "- Page payments\n- eu-west\n- INC-002 open";
+    const first = new SqliteConversationStore(path);
+    const { id } = first.create();
+    assert.equal(first.saveSummary(id, summary, 0, 8), true);
+    const before = first.summaryOf(id);
+    first.close();
+
+    const second = new SqliteConversationStore(path);
+    try {
+      assert.deepEqual(second.summaryOf(id), before);
+      assert.equal(before?.coveredMessages, 8);
+      assert.equal(second.summaryOf(id)?.summary, summary);
+    } finally {
+      second.close();
+    }
+  });
+
+  it("opens a database created before summaries existed, adds the table, and keeps every message", () => {
+    const path = tempFile();
+    const old = new DatabaseSync(path);
+    old.exec(`
+      CREATE TABLE conversations (id TEXT PRIMARY KEY CHECK (length(id) > 0), created_at TEXT NOT NULL) STRICT;
+      CREATE TABLE messages (
+        id INTEGER PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id),
+        role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+    `);
+    old.prepare("INSERT INTO conversations (id, created_at) VALUES (?, ?)").run("old", AT);
+    for (const content of ["one", "two", "three"]) {
+      old.prepare("INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)").run(
+        "old",
+        "user",
+        content,
+        AT,
+      );
+    }
+    old.close();
+
+    const store = new SqliteConversationStore(path);
+    try {
+      assert.deepEqual(store.messagesAfter("old", 0).map((message) => message.content), ["one", "two", "three"]);
+      assert.equal(store.summaryOf("old"), undefined);
+      assert.equal(store.saveSummary("old", "- d", 0, 8), true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("rejects a stored row edited by hand into a shape the domain refuses", () => {
+    const path = tempFile();
+    const store = new SqliteConversationStore(path);
+    const { id } = store.create();
+    store.saveSummary(id, "- d", 0, 8);
+    store.close();
+
+    const raw = new DatabaseSync(path);
+    raw.prepare("UPDATE conversation_summaries SET summary = ? WHERE conversation_id = ?").run("\u00a0", id);
+    raw.close();
+
+    const reopened = new SqliteConversationStore(path);
+    try {
+      assert.throws(() => reopened.summaryOf(id));
+    } finally {
+      reopened.close();
     }
   });
 

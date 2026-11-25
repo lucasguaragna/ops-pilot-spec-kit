@@ -1,6 +1,5 @@
 import express, { type ErrorRequestHandler } from "express";
 import type { StrategyDependencies } from "../agents/react.ts";
-import { HISTORY_LIMIT } from "../agents/history.ts";
 import type { StrategyRegistry } from "../agents/index.ts";
 import type { MemoryStore } from "../memory/memory-store.ts";
 import type { ConversationStore } from "../store/conversation-store.ts";
@@ -11,6 +10,8 @@ export const DEFAULT_TIMEOUT_MS = 180_000;
 export const DEFAULT_MAX_ITERATIONS = 10;
 /** The learning step gives up after this long (spec assumption: 30 s). */
 export const LEARNING_TIMEOUT_MS = 30_000;
+/** One history summarization gives up after this long. It is outside the run's timeout, so a slow summary never eats the agent's time. */
+export const SUMMARY_TIMEOUT_MS = 30_000;
 
 export interface AppSettings {
   registry: StrategyRegistry;
@@ -22,12 +23,12 @@ export interface AppSettings {
   memories: MemoryStore;
   timeoutMs?: number;
   maxIterations?: number;
-  /** How many earlier messages reach the agent. */
-  historyLimit?: number;
   /** Holds the learning steps still running after their reply; tests await `settled()`. */
   background?: BackgroundTasks;
   /** How long one learning step may run. A test seam; production uses the default. */
   learningTimeoutMs?: number;
+  /** How long one history summarization may run. A test seam; production uses the default. */
+  summaryTimeoutMs?: number;
 }
 
 /** The settings with every default filled in. */
@@ -37,9 +38,9 @@ export function resolveSettings(settings: AppSettings): ResolvedSettings {
   return {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     maxIterations: DEFAULT_MAX_ITERATIONS,
-    historyLimit: HISTORY_LIMIT,
     background: new BackgroundTasks(),
     learningTimeoutMs: LEARNING_TIMEOUT_MS,
+    summaryTimeoutMs: SUMMARY_TIMEOUT_MS,
     ...settings,
   };
 }

@@ -75,10 +75,11 @@ Each feature has a folder in `specs/` with its spec, plan, tasks and contracts.
 | SQLite store | Alerts, incidents and runbooks in `node:sqlite`, with prepared statements and a seed | `004-sqlite-ops-store` |
 | Provider status tool | `check_provider_status` reads the public GitHub or Cloudflare status page. It needs no key, retries once, times out after 5 s and never throws | `005-provider-status-tool` |
 | MCP server | `opspilot` server over stdio that exposes the incident tools to MCP clients | `006-mcp-server` |
-| Persistent conversation | `POST /chat` takes an optional `conversationId`. The last 12 messages go into the prompt, saved in the same SQLite file | `007-persistent-conversation` |
+| Persistent conversation | `POST /chat` takes an optional `conversationId`. The newest 8 messages go into the prompt word for word, plus a summary of the older ones (see 011), saved in the same SQLite file | `007-persistent-conversation` |
 | Semantic memory | `POST /chat` takes an optional `userId`. Up to 3 of that user's facts, matched by meaning with a local `all-MiniLM-L6-v2` model, go into the prompt; the agent saves and forgets facts with two tools | `008-semantic-memory` |
 | Learning reflector | After each completed reply with a `userId`, a background step learns at most one lasting fact from the message, never a one-off request or a secret; `forget_preference` forgets a fact by description | `009-learning-reflector` |
 | Context measurement | `metrics.promptTokens` is the real input token count the provider reported, and `metrics.contextBreakdown` estimates the starting context per source. `scripts/long-conversation.sh` prints both turn by turn | `010-context-measurement` |
+| History summarization | Messages that leave the 8-message window are merged into one short telegraphic summary stored in `conversation_summaries`. It is refreshed only on batch boundaries, never on every request, and a `summarize` trace event marks the request that refreshed it | `011-history-summarization` |
 
 ### Tools
 
@@ -213,7 +214,7 @@ curl -s localhost:3000/chat -H 'content-type: application/json' \
 | 504 | `timeout` | The run did not finish in 180 s and was cancelled |
 
 Every reply names its conversation in `conversationId`, and `metrics.historyMessages` says how many
-earlier messages (at most 12) the agent was given. To continue a conversation, send that id back:
+earlier messages the agent was given word for word (8 to 14; a summary stands for the older ones). To continue a conversation, send that id back:
 
 ```sh
 curl -s localhost:3000/chat -H 'content-type: application/json' \
@@ -257,6 +258,30 @@ secret` (the fact itself is never logged). A third tool, `forget_preference`, re
 closest fact to a short description, and only when it scores at least 0.5, so the engineer can
 say "forget that I like bullet lists" without knowing the `[memory N]` id.
 
+### History summarization
+
+The agent reads a conversation in three layers: your remembered facts, then one summary of the older
+messages, then the messages the summary does not cover word for word, then the request.
+
+- **Window.** The newest 8 messages are always word for word. Older messages not yet summarized stay
+  word for word too, so the agent sees 8 to 14.
+- **When.** One summarization runs once 8 messages have left the window: on exchanges 9, 13, 17, and
+  so on. It never runs on every request, and it runs inside that `POST /chat`, before the agent, under
+  its own 30 s limit.
+- **What.** One model call merges the previous summary with the messages that left the window into
+  one short text of telegraphic bullets (decisions, facts, incidents, open items), asked to stay under
+  150 tokens. The code caps it at 300 estimated tokens, dropping whole lines from the end, and drops any
+  line that looks like a credential before it is stored.
+- **Where.** `conversation_summaries`, one row per conversation in the same SQLite file. It survives a
+  restart, and the next request makes no summarization call.
+- **See it.** The reply of the request that refreshed the summary starts its `trace` with
+  `{ "type": "summarize", "content": "<the summary>", "absorbed": 8 }`. No other reply has one. The
+  summarizer's calls and tokens are counted in `metrics`.
+- **Failure.** A failed summarization (provider error, timeout, nothing usable) never changes the
+  status code, the answer, or the trace. The agent gets the previous summary and the newest 14 messages,
+  the server logs one line without the summary text, and the next attempt waits for the next batch
+  boundary. Each attempt makes exactly one model call.
+
 ### Context measurement
 
 A 200 reply, and a `run_failed` 502 that carries metrics, say how big the prompt was:
@@ -264,7 +289,7 @@ A 200 reply, and a `run_failed` 502 that carries metrics, say how big the prompt
 | Field | Meaning |
 | --- | --- |
 | `metrics.promptTokens` | **Real.** The input tokens the provider reported, summed over every model call of the run: planner, each ReAct step, retries, critic, rewrite. `null` when no call reported usage. The learning step is not included |
-| `metrics.contextBreakdown` | **Estimated.** `system`, `tools`, `history`, `memories`, and `message`, each as characters divided by 4 rounded up, and `total`, their sum. It describes the context the agent *starts* with, after the 12-message and 3-fact limits |
+| `metrics.contextBreakdown` | **Estimated.** `system`, `tools`, `history`, `memories`, and `message`, each as characters divided by 4 rounded up, and `total`, their sum. It describes the context the agent *starts* with, after the history window (8 to 14 messages plus the summary) and the 3-fact limit |
 
 The estimate counts string length, so accents count 1 and an emoji counts 2; it is a teaching
 baseline, not a tokenizer. Tool observations join the context during a run, so they show up in
@@ -282,14 +307,14 @@ OPSPILOT_URL=http://127.0.0.1:3001 TURNS=14 scripts/long-conversation.sh
 Example output:
 
 ```text
-turn 6 | promptTokens 2210 | history 480 (10 messages)
-turn 7 | promptTokens 2395 | history 526 (12 messages)
-turn 8 | promptTokens 2398 | history 531 (12 messages)
+turn 8 | promptTokens 2398 | history 531 (14 messages)
+turn 9 | promptTokens 2210 | history 480 (8 messages)
+turn 10 | promptTokens 2395 | history 526 (10 messages)
 ```
 
 `OPSPILOT_URL` defaults to `http://127.0.0.1:3000` and `TURNS` to 10. A failed turn prints
 `turn N | error <code>` and the run goes on; an unreachable server prints `Cannot reach <url>` and
-exits 1. The `(k messages)` count shows the turn where the history stops growing.
+exits 1. The `(k messages)` count climbs to 14 and drops to 8 on turn 9, when the history is summarized.
 
 The server validates every reply body against its schema before sending it.
 

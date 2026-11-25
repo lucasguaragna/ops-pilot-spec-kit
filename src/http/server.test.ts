@@ -5,10 +5,11 @@ import { FakeEmbedder, scoredAgainst, unitVector } from "../testing/fake-embedde
 import { FakeMemoryStore } from "../testing/fake-memory-store.ts";
 import { learningTurn } from "../testing/learning-turns.ts";
 import { BackgroundTasks } from "./background-tasks.ts";
-import { ScriptedChatModel, toolCallTurn } from "../testing/scripted-chat-model.ts";
+import { ScriptedChatModel, textTurn, toolCallTurn } from "../testing/scripted-chat-model.ts";
+import { NO_LEARNING } from "../testing/learning-turns.ts";
 import { VERDICT_TOOL_NAME } from "../agents/reflection.ts";
 import type { ReasoningStrategy } from "../domain/types.ts";
-import { ChatReply } from "./schemas.ts";
+import { ChatReply, ErrorReply } from "./schemas.ts";
 import {
   closeServers,
   completed,
@@ -511,5 +512,111 @@ describe("POST /chat: memory", () => {
     assert.deepEqual(json, { error: "internal", message: "Internal server error" });
     assert.deepEqual(react.calls, []);
     assert.match(String(logged.mock.calls[0]?.arguments[0]), /^Memory recall failed: Embedding failed: /);
+  });
+});
+
+describe("POST /chat: history summary", () => {
+  const SUMMARY = "- Decision: page the payments team\n- Open: INC-002 stays open";
+  const seedConversation = (store: FakeConversationStore, count: number) => {
+    const { id } = store.create();
+    for (let index = 0; index < count; index++) {
+      store.append(id, { role: index % 2 === 0 ? "user" : "assistant", content: `message ${index + 1}` });
+    }
+    return id;
+  };
+
+  it("gives the agent the stored summary ahead of the last 8 messages", async () => {
+    const store = new FakeConversationStore();
+    const id = seedConversation(store, 16);
+    store.saveSummary(id, SUMMARY, 0, 8);
+    const react = fakeStrategy("react", completed("ok"));
+    const baseUrl = await startServer(settingsFor({ react }, { conversations: store }));
+
+    const { status, json } = await postChat(baseUrl, { ...validBody, conversationId: id });
+
+    assert.equal(status, 200);
+    const input = react.calls[0]?.input ?? "";
+    assert.ok(input.startsWith("Summary of the earlier conversation"));
+    assert.ok(input.includes("page the payments team"));
+    assert.ok(input.includes("message 9"));
+    assert.ok(!input.includes("message 8\n"));
+    assert.equal(json.metrics.historyMessages, 8);
+  });
+
+  it("puts a summarize event first in the reply that stored a summary, and not in the next one (US3-AS1, US3-AS2)", async () => {
+    const store = new FakeConversationStore();
+    const id = seedConversation(store, 16);
+    const react = fakeStrategy("react", completed("ok"));
+    const model = new ScriptedChatModel([textTurn(SUMMARY), NO_LEARNING]);
+    const baseUrl = await startServer(
+      settingsFor({ react }, { conversations: store, createDependencies: () => ({ model, tools: [] }) }),
+    );
+
+    const first = await postChat(baseUrl, { ...validBody, conversationId: id });
+
+    assert.equal(first.status, 200);
+    const parsed = ChatReply.parse(first.json);
+    assert.equal(parsed.trace[0]?.type, "summarize");
+    assert.equal(parsed.trace[0]?.type === "summarize" ? parsed.trace[0].absorbed : undefined, 8);
+    assert.equal(parsed.metrics.historyMessages, 8);
+    assert.equal(parsed.metrics.llmCalls, 2 + 1);
+
+    const second = await postChat(baseUrl, { ...validBody, conversationId: id });
+
+    assert.equal(second.status, 200);
+    assert.ok(ChatReply.parse(second.json).trace.every((event) => event.type !== "summarize"));
+    assert.equal(model.calls, 1);
+  });
+
+  it("replies 200 with no event when the summarizer fails, and still gives the newest 14 messages (US3-AS3)", async () => {
+    const store = new FakeConversationStore();
+    const id = seedConversation(store, 16);
+    const react = fakeStrategy("react", completed("ok"));
+    const model = new ScriptedChatModel([new Error("provider down")]);
+    const baseUrl = await startServer(
+      settingsFor({ react }, { conversations: store, createDependencies: () => ({ model, tools: [] }) }),
+    );
+
+    const { status, json } = await postChat(baseUrl, { ...validBody, conversationId: id });
+
+    assert.equal(status, 200);
+    const parsed = ChatReply.parse(json);
+    assert.ok(parsed.trace.every((event) => event.type !== "summarize"));
+    assert.equal(parsed.metrics.historyMessages, 14);
+    assert.equal(store.summaryOf(id), undefined);
+  });
+
+  it("keeps the summarize event first in the 502 of a run that fails after the summary was stored (G1, FR-009)", async () => {
+    const store = new FakeConversationStore();
+    const id = seedConversation(store, 16);
+    let failing = true;
+    const react = fakeStrategy("react", async () =>
+      failing
+        ? {
+            stopReason: "error" as const,
+            answer: null,
+            error: { name: "Error", message: "tool failed" },
+            trace: [{ type: "answer" as const, content: "partial" }],
+            metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null },
+          }
+        : completed("ok"),
+    );
+    const model = new ScriptedChatModel([textTurn(SUMMARY), NO_LEARNING]);
+    const baseUrl = await startServer(
+      settingsFor({ react }, { conversations: store, createDependencies: () => ({ model, tools: [] }) }),
+    );
+
+    const failed = await postChat(baseUrl, { ...validBody, conversationId: id });
+
+    assert.equal(failed.status, 502);
+    const error = ErrorReply.parse(failed.json);
+    assert.ok(error.error === "run_failed");
+    assert.equal(error.trace?.[0]?.type, "summarize");
+
+    failing = false;
+    const next = await postChat(baseUrl, { ...validBody, conversationId: id });
+    assert.equal(next.status, 200);
+    assert.ok((react.calls[1]?.input ?? "").startsWith("Summary of the earlier conversation"));
+    assert.equal(model.calls, 1);
   });
 });

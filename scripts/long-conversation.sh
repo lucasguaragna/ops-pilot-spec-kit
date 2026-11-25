@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sends a fixed series of on-call messages to a running OpsPilot server, all in one conversation,
 # and prints one line per turn: the real promptTokens the provider reported, and the estimated
-# history size. Watch the history stop growing once it reaches the 12-message limit.
+# history size. Watch the history climb to 14 messages and drop to 8 on turn 9, when it is summarized.
 #
 #   scripts/long-conversation.sh
 #   OPSPILOT_URL=http://127.0.0.1:3001 TURNS=14 scripts/long-conversation.sh

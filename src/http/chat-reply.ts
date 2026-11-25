@@ -1,6 +1,7 @@
 import type { LearningOutcome } from "../agents/learning-reflector.ts";
 import { toRunError } from "../agents/run-outcome.ts";
 import type { ContextBreakdown } from "../context/breakdown.ts";
+import { addPromptTokens } from "../context/tokens.ts";
 import type { ConversationNotFoundError, UnknownStrategyError } from "../domain/errors.ts";
 import type { NewMessage } from "../domain/schemas.ts";
 import type { Metrics, RunError, RunResult, TraceEvent } from "../domain/types.ts";
@@ -36,6 +37,54 @@ const contextMetrics = (outcome: ChatOutcome) => ({
   recalledMemories: outcome.recalledMemories,
   contextBreakdown: outcome.context,
 });
+
+/**
+ * What the summarization step did in one request. A failure is a value, not a throw: it never fails
+ * the request. `llmCalls` and `promptTokens` are what the step spent, stored or not, because the
+ * calls were paid for either way.
+ */
+export type SummarizationStep =
+  | {
+      kind: "stored";
+      summary: string;
+      /** `renderSummary(summary)`: exactly what the agent reads. */
+      rendered: string;
+      /** How many messages this summarization added to the coverage. */
+      absorbed: number;
+      droppedSecrets: number;
+      llmCalls: number;
+      promptTokens: number | null;
+    }
+  | {
+      kind: "failed";
+      reason: "thrown" | "timeout" | "empty" | "conflict";
+      /** The error of a `thrown` step; unset for the other reasons. */
+      error?: unknown;
+      llmCalls: number;
+      promptTokens: number | null;
+    }
+  | { kind: "not_due" };
+
+/**
+ * Pure: puts the summarization step into the run's outcome. Its calls and tokens join the metrics,
+ * stored or failed. A stored step also puts a `summarize` event first in the trace, so the engineer
+ * sees which request refreshed the summary. A run that threw or timed out has no trace or metrics
+ * in its reply, so it passes through unchanged.
+ */
+export function withSummarization(outcome: RunOutcome, step: SummarizationStep): RunOutcome {
+  if (step.kind === "not_due" || outcome.kind !== "result") return outcome;
+  const { result } = outcome;
+  const metrics = {
+    ...result.metrics,
+    llmCalls: result.metrics.llmCalls + step.llmCalls,
+    promptTokens: addPromptTokens(result.metrics.promptTokens, step.promptTokens),
+  };
+  const trace: TraceEvent[] =
+    step.kind === "stored"
+      ? [{ type: "summarize", content: step.rendered, absorbed: step.absorbed }, ...result.trace]
+      : result.trace;
+  return { kind: "result", result: { ...result, trace, metrics } };
+}
 
 export interface HttpReply {
   status: number;
@@ -184,5 +233,34 @@ export function learningLogLine(
             : { stream: "warn", line: `Learning skipped for ${userId}: ${outcome.reason}` };
       }
     }
+  }
+}
+
+/**
+ * Pure: the log line for one summarization step, or undefined when there is nothing to say. Items
+ * may hold anything the conversation said, so no line ever carries item text. `timeoutMs` is passed
+ * in because a failed step carries no duration.
+ */
+export function summaryLogLine(conversationId: string, step: SummarizationStep, timeoutMs: number): LogLine | undefined {
+  switch (step.kind) {
+    case "not_due":
+      return undefined;
+    case "stored": {
+      const secrets = step.droppedSecrets > 0 ? `, ${step.droppedSecrets} lines dropped as secrets` : "";
+      return { stream: "log", line: `Summarized ${step.absorbed} messages for conversation ${conversationId}${secrets}` };
+    }
+    case "failed":
+      switch (step.reason) {
+        case "timeout":
+          return { stream: "error", line: `Summary timed out after ${timeoutMs} ms for conversation ${conversationId}` };
+        case "thrown": {
+          const { error } = step;
+          const cause = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+          return { stream: "error", line: `Summary failed for conversation ${conversationId}: ${cause}` };
+        }
+        case "empty":
+        case "conflict":
+          return { stream: "warn", line: `Summary skipped for conversation ${conversationId}: ${step.reason}` };
+      }
   }
 }

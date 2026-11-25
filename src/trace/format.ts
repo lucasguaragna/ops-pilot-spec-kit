@@ -13,6 +13,8 @@ export function formatEvent(event: TraceEvent): string {
       return `[action] ${event.tool} ${JSON.stringify(event.args)}`;
     case "observation":
       return `[observation] ${event.tool}: ${event.content}`;
+    case "summarize":
+      return `[summarize] (${event.absorbed} messages): ${event.content.trimEnd()}`;
     case "plan":
       return ["[plan]", ...event.steps.map((step, index) => `  ${index + 1}. ${step}`)].join("\n");
   }

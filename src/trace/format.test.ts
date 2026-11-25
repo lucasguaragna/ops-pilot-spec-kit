@@ -35,6 +35,15 @@ describe("formatEvent", () => {
   });
 });
 
+describe("formatEvent: summarize", () => {
+  it("names the number of messages absorbed, then the rendered summary without its trailing blank lines", () => {
+    assert.equal(
+      formatEvent({ type: "summarize", absorbed: 8, content: "Summary of the earlier conversation:\nDecisions:\n- A\n\n" }),
+      "[summarize] (8 messages): Summary of the earlier conversation:\nDecisions:\n- A",
+    );
+  });
+});
+
 describe("formatMetrics", () => {
   it("prints LLM calls and latency", () => {
     assert.equal(formatMetrics({ llmCalls: 3, latencyMs: 120, promptTokens: null }), "llmCalls: 3 | latencyMs: 120");

@@ -27,6 +27,7 @@ export const TraceEventSchema = z.discriminatedUnion("type", [
     content: z.string(),
   }),
   z.object({ type: z.literal("answer"), content: z.string() }),
+  z.object({ type: z.literal("summarize"), content: z.string(), absorbed: Count.min(1) }),
 ]);
 
 /** Estimated tokens of the starting context per source; the total is their sum. */

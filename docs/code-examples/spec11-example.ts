@@ -1,0 +1,1 @@
+const SUMMARIZER_PROMPT = "Comprima o trecho de conversa a seguir em no maximo 150 tokens, preservando obrigatoriamente: decisoes tomadas, fatos estabelecidos(nomes, datas, prazos, preferencias), incidentes abertos/resolvidos e pendências abertas. Descarte cumprimentos e conversa social. Se houver um resumo anterior, incorpore. Responda só o resumo em tópicos telegráficos"

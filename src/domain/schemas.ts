@@ -132,6 +132,20 @@ export const StoredMessage = NewMessage.extend({
 });
 export type StoredMessage = z.infer<typeof StoredMessage>;
 
+/** The text of a conversation summary: telegraphic bullet lines. Never blank. */
+export const SummaryText = z.string().trim().min(1);
+export type SummaryText = z.infer<typeof SummaryText>;
+
+/** The stored summary of a conversation. `coveredMessages` counts the oldest messages it stands for. */
+export const ConversationSummary = z.object({
+  conversationId: z.string().min(1),
+  summary: SummaryText,
+  coveredMessages: z.number().int().positive(),
+  /** ISO 8601 */
+  updatedAt: z.string(),
+});
+export type ConversationSummary = z.infer<typeof ConversationSummary>;
+
 /** Whoever the client says it is: there is no authentication. The memories table CHECK mirrors the limits. */
 export const UserId = z.string().trim().min(1).max(128);
 export type UserId = z.infer<typeof UserId>;

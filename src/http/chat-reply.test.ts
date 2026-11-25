@@ -9,10 +9,13 @@ import {
   learningLogLine,
   messagesToSave,
   shouldLearn,
+  summaryLogLine,
   toHttpReply,
   unknownStrategyReply,
+  withSummarization,
   type ChatOutcome,
   type RunOutcome,
+  type SummarizationStep,
 } from "./chat-reply.ts";
 import { ChatReply, ErrorReply } from "./schemas.ts";
 import type { LearningOutcome } from "../agents/learning-reflector.ts";
@@ -301,6 +304,144 @@ describe("learningLogLine", () => {
   it("never prints the fact text", () => {
     for (const [, timed] of cases) {
       assert.doesNotMatch(learningLogLine("u1", timed, 30_000)?.line ?? "", /hunter2|password/);
+    }
+  });
+});
+
+describe("withSummarization", () => {
+  const stored: SummarizationStep = {
+    kind: "stored",
+    summary: "- Page payments",
+    rendered: "RENDERED",
+    absorbed: 8,
+    droppedSecrets: 0,
+    llmCalls: 1,
+    promptTokens: 300,
+  };
+  const failed: SummarizationStep = { kind: "failed", reason: "thrown", error: new Error("x"), llmCalls: 2, promptTokens: null };
+  const completedRun: RunOutcome = {
+    kind: "result",
+    result: { stopReason: "completed", answer: "done", trace, metrics: { llmCalls: 3, latencyMs: 10, promptTokens: 1000 } },
+  };
+  const failedRun: RunOutcome = {
+    kind: "result",
+    result: {
+      stopReason: "error",
+      answer: null,
+      error: { name: "Error", message: "x" },
+      trace,
+      metrics: { llmCalls: 2, latencyMs: 10, promptTokens: null },
+    },
+  };
+
+  const metricsOf = (outcome: RunOutcome) => (outcome.kind === "result" ? outcome.result.metrics : undefined);
+  const traceOf = (outcome: RunOutcome) => (outcome.kind === "result" ? outcome.result.trace : undefined);
+
+  it("adds a stored step's calls and tokens to the metrics of a completed run", () => {
+    assert.deepEqual(metricsOf(withSummarization(completedRun, stored)), { llmCalls: 4, latencyMs: 10, promptTokens: 1300 });
+  });
+
+  it("adds a failed step's calls too, and its tokens only when it reported some", () => {
+    assert.deepEqual(metricsOf(withSummarization(completedRun, failed)), { llmCalls: 5, latencyMs: 10, promptTokens: 1000 });
+    assert.deepEqual(metricsOf(withSummarization(completedRun, { ...failed, promptTokens: 40 })), {
+      llmCalls: 5,
+      latencyMs: 10,
+      promptTokens: 1040,
+    });
+  });
+
+  it("counts the step in a run that failed with partial metrics", () => {
+    assert.deepEqual(metricsOf(withSummarization(failedRun, stored)), { llmCalls: 3, latencyMs: 10, promptTokens: 300 });
+  });
+
+  it("changes nothing for a step that was not due", () => {
+    assert.equal(withSummarization(completedRun, { kind: "not_due" }), completedRun);
+  });
+
+  it("leaves a thrown run and a timed-out run unchanged", () => {
+    const thrown: RunOutcome = { kind: "thrown", error: new Error("boom") };
+    const timeout: RunOutcome = { kind: "timeout", timeoutMs: 5 };
+    assert.equal(withSummarization(thrown, stored), thrown);
+    assert.equal(withSummarization(timeout, stored), timeout);
+  });
+
+  it("puts the summarize event first in the trace of a completed run, and of a run_failed one (FR-009)", () => {
+    const event = { type: "summarize", content: "RENDERED", absorbed: 8 };
+    assert.deepEqual(traceOf(withSummarization(completedRun, stored)), [event, ...trace]);
+    assert.deepEqual(traceOf(withSummarization(failedRun, stored)), [event, ...trace]);
+    const reply = toHttpReply(chat(withSummarization(failedRun, stored)));
+    assert.equal(reply.status, 502);
+    assert.ok(ErrorReply.safeParse(reply.body).success);
+    assert.deepEqual((reply.body as { trace: unknown[] }).trace[0], event);
+  });
+
+  it("adds no event for a failed or not-due step", () => {
+    assert.deepEqual(traceOf(withSummarization(completedRun, failed)), trace);
+    assert.deepEqual(traceOf(withSummarization(completedRun, { kind: "not_due" })), trace);
+  });
+
+  it("does not change the answer or the stop reason", () => {
+    const outcome = withSummarization(completedRun, stored);
+    assert.ok(outcome.kind === "result" && outcome.result.stopReason === "completed" && outcome.result.answer === "done");
+  });
+});
+
+describe("summaryLogLine", () => {
+  const ITEM = "- The staging DB password is hunter2";
+  const storedStep = (droppedSecrets: number): SummarizationStep => ({
+    kind: "stored",
+    summary: ITEM,
+    rendered: ITEM,
+    absorbed: 8,
+    droppedSecrets,
+    llmCalls: 1,
+    promptTokens: null,
+  });
+
+  const cases: [string, SummarizationStep, unknown][] = [
+    ["stored", storedStep(0), { stream: "log", line: "Summarized 8 messages for conversation c1" }],
+    [
+      "stored with secrets dropped",
+      storedStep(2),
+      { stream: "log", line: "Summarized 8 messages for conversation c1, 2 lines dropped as secrets" },
+    ],
+    [
+      "timeout",
+      { kind: "failed", reason: "timeout", llmCalls: 1, promptTokens: null },
+      { stream: "error", line: "Summary timed out after 30000 ms for conversation c1" },
+    ],
+    [
+      "thrown",
+      { kind: "failed", reason: "thrown", error: new Error("boom"), llmCalls: 2, promptTokens: null },
+      { stream: "error", line: "Summary failed for conversation c1: Error: boom" },
+    ],
+    [
+      "thrown, not an Error",
+      { kind: "failed", reason: "thrown", error: "boom", llmCalls: 2, promptTokens: null },
+      { stream: "error", line: "Summary failed for conversation c1: boom" },
+    ],
+    [
+      "empty",
+      { kind: "failed", reason: "empty", llmCalls: 1, promptTokens: null },
+      { stream: "warn", line: "Summary skipped for conversation c1: empty" },
+    ],
+    [
+      "conflict",
+      { kind: "failed", reason: "conflict", llmCalls: 1, promptTokens: null },
+      { stream: "warn", line: "Summary skipped for conversation c1: conflict" },
+    ],
+    ["not due", { kind: "not_due" }, undefined],
+  ];
+
+  for (const [label, step, expected] of cases) {
+    it(`maps ${label}`, () => {
+      assert.deepEqual(summaryLogLine("c1", step, 30_000), expected);
+    });
+  }
+
+  it("never prints an item's text", () => {
+    for (const [, step] of cases) {
+      assert.doesNotMatch(summaryLogLine("c1", step, 30_000)?.line ?? "", /hunter2|password/);
     }
   });
 });

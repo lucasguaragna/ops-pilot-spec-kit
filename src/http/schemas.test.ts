@@ -173,3 +173,31 @@ describe("MetricsSchema: contextBreakdown", () => {
     assert.equal(MetricsSchema.safeParse({ ...metrics, contextBreakdown: undefined }).success, false);
   });
 });
+
+describe("reply schemas: summarize event", () => {
+  const metrics = { llmCalls: 1, latencyMs: 2, historyMessages: 8, recalledMemories: 0, promptTokens: null, contextBreakdown: breakdown };
+  const reply = (event: unknown) => ({ conversationId: "c1", answer: "ok", stopReason: "completed", trace: [event], metrics });
+
+  it("accepts a summarize event in a chat reply", () => {
+    assert.ok(ChatReply.safeParse(reply({ type: "summarize", content: "x", absorbed: 8 })).success);
+  });
+
+  it("rejects an absorbed count of 0 or a fraction, and a missing content", () => {
+    assert.equal(ChatReply.safeParse(reply({ type: "summarize", content: "x", absorbed: 0 })).success, false);
+    assert.equal(ChatReply.safeParse(reply({ type: "summarize", content: "x", absorbed: 1.5 })).success, false);
+    assert.equal(ChatReply.safeParse(reply({ type: "summarize", absorbed: 8 })).success, false);
+  });
+
+  it("accepts the event in the trace of a run_failed error reply", () => {
+    assert.ok(
+      ErrorReply.safeParse({
+        error: "run_failed",
+        message: "The run stopped with an error",
+        runError: { name: "Error", message: "m" },
+        conversationId: "c1",
+        trace: [{ type: "summarize", content: "x", absorbed: 8 }],
+        metrics,
+      }).success,
+    );
+  });
+});
