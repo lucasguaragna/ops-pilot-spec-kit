@@ -77,3 +77,12 @@ describe("ScriptedChatModel: withUsage", () => {
     );
   });
 });
+
+describe("ScriptedChatModel: bound", () => {
+  it("records what bindTools is given, shared with the bound copy", async () => {
+    const model = new ScriptedChatModel([textTurn("ok")]);
+    const bound = model.bindTools([{ name: "t" }], { tool_choice: "any" });
+    assert.deepEqual(model.bound, [{ tools: [{ name: "t" }], kwargs: { tool_choice: "any" } }]);
+    assert.equal(bound.bound.length, 1);
+  });
+});

@@ -46,7 +46,7 @@ const lines = (run: ScriptRun) => run.stdout.split("\n").filter((line) => line !
 
 const withTokens = (promptTokens: number | null): RunResult => ({
   ...completed("ok"),
-  metrics: { llmCalls: 1, latencyMs: 1, promptTokens },
+  metrics: { llmCalls: 1, latencyMs: 1, promptTokens, modelUsed: null },
 });
 
 const failed: RunResult = {
@@ -54,7 +54,7 @@ const failed: RunResult = {
   answer: null,
   error: { name: "Error", message: "Provider returned 503" },
   trace: [],
-  metrics: { llmCalls: 1, latencyMs: 1, promptTokens: 40 },
+  metrics: { llmCalls: 1, latencyMs: 1, promptTokens: 40, modelUsed: null },
 };
 
 /** A react strategy that answers each call from a list, repeating the last, and records its inputs. */

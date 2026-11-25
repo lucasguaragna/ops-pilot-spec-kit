@@ -2,6 +2,7 @@ import type { RunnableConfig } from "@langchain/core/runnables";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import type { SummarizationStep } from "../agents/history-summarizer.ts";
 import { composeInput } from "../agents/history.ts";
+import { fallbackEvents } from "../agents/llm-counter.ts";
 import { composeMemoryInput } from "../agents/memories.ts";
 import { addPromptTokens } from "../context/tokens.ts";
 import type { Memory, NewMessage } from "../domain/schemas.ts";
@@ -61,6 +62,8 @@ const GraphState = Annotation.Root({
   trace: Annotation<NodeTraceEvent[]>({ reducer: (a, b) => a.concat(b), default: () => [] }),
   llmCalls: Annotation<number>({ reducer: (a, b) => a + b, default: () => 0 }),
   promptTokens: Annotation<number | null>({ reducer: addPromptTokens, default: () => null }),
+  // The model of the newest call that got an answer; a node that had none keeps the earlier value.
+  modelUsed: Annotation<string | null>({ reducer: (earlier, latest) => latest ?? earlier, default: () => null }),
 });
 type State = typeof GraphState.State;
 
@@ -88,9 +91,16 @@ export async function runProductionGraph(
       history,
       summaryText,
       input: composeMemoryInput(state.recalled, composeInput(history, state.message, summaryText)),
-      trace: stored ? tagNode([{ type: "summarize", content: step.rendered, absorbed: step.absorbed }], "context") : [],
+      trace: tagNode(
+        [
+          ...(step.kind === "not_due" ? [] : fallbackEvents(step.switches)),
+          ...(stored ? [{ type: "summarize" as const, content: step.rendered, absorbed: step.absorbed }] : []),
+        ],
+        "context",
+      ),
       llmCalls: step.kind === "not_due" ? 0 : step.llmCalls,
       promptTokens: step.kind === "not_due" ? null : step.promptTokens,
+      modelUsed: step.kind === "not_due" ? null : step.modelUsed,
     };
   };
 
@@ -98,13 +108,20 @@ export async function runProductionGraph(
     const spent =
       state.override === undefined
         ? await router.route(state.input, { signal: config.signal })
-        : { decision: decideRoute({ kind: "override", route: state.override }), llmCalls: 0, promptTokens: null };
+        : {
+            decision: decideRoute({ kind: "override", route: state.override }),
+            llmCalls: 0,
+            promptTokens: null,
+            switches: [],
+            modelUsed: null,
+          };
     const { decision } = spent;
     return {
       decision,
-      trace: tagNode([{ type: "route", ...decision }], "router"),
+      trace: tagNode([...fallbackEvents(spent.switches), { type: "route", ...decision }], "router"),
       llmCalls: spent.llmCalls,
       promptTokens: spent.promptTokens,
+      modelUsed: spent.modelUsed,
     };
   };
 
@@ -115,12 +132,13 @@ export async function runProductionGraph(
       trace: finalizeTrace(route, result),
       llmCalls: result.metrics.llmCalls,
       promptTokens: result.metrics.promptTokens,
+      modelUsed: result.metrics.modelUsed,
     };
   };
 
   const responseNode = (state: State) => {
     const strategy = state.strategyResult as RunResult;
-    const metrics = { llmCalls: state.llmCalls, latencyMs: 0, promptTokens: state.promptTokens };
+    const metrics = { llmCalls: state.llmCalls, latencyMs: 0, promptTokens: state.promptTokens, modelUsed: state.modelUsed };
     return { result: { ...strategy, trace: state.trace, metrics } as RunResult<NodeTraceEvent> };
   };
 

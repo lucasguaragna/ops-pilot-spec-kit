@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ConfigurationError } from "../domain/errors.ts";
-import { createModel, retryFailedCall } from "./model.ts";
+import { chatModelFor, createModel, fallbackModelOf, retryFailedCall } from "./model.ts";
 
 const secret = "sk-or-test-secret";
 
@@ -26,11 +26,48 @@ describe("createModel", () => {
     );
   });
 
-  it("builds a temperature 0 model for OpenRouter", () => {
-    const model = createModel({ OPENROUTER_API_KEY: secret, OPENROUTER_MODEL: "openai/gpt-4o-mini" });
+  it("builds a temperature 0 model for OpenRouter whose own retries are off", () => {
+    const model = chatModelFor({ OPENROUTER_API_KEY: secret }, "openai/gpt-4o-mini");
     assert.equal(model.model, "openai/gpt-4o-mini");
     assert.equal(model.temperature, 0);
     assert.deepEqual(model.modelKwargs, { provider: { require_parameters: true } });
+    assert.equal((model as unknown as { caller: { maxRetries: number } }).caller.maxRetries, 0);
+  });
+
+  it("returns a model that binds tools and structured output, with or without a fallback", () => {
+    for (const OPENROUTER_MODEL_FALLBACK of [undefined, "other/model"]) {
+      const model = createModel({ OPENROUTER_API_KEY: secret, OPENROUTER_MODEL: "a/b", OPENROUTER_MODEL_FALLBACK });
+      assert.equal(typeof model.bindTools, "function");
+      assert.equal(typeof model.withStructuredOutput, "function");
+    }
+  });
+
+  it("does not need a fallback to start (FR-002)", () => {
+    for (const OPENROUTER_MODEL_FALLBACK of [undefined, "", "   ", " a/b "]) {
+      assert.doesNotThrow(() =>
+        createModel({ OPENROUTER_API_KEY: secret, OPENROUTER_MODEL: "a/b", OPENROUTER_MODEL_FALLBACK }),
+      );
+    }
+  });
+
+  it("still names a missing key only by field when a fallback is set", () => {
+    assert.throws(
+      () => createModel({ OPENROUTER_MODEL: "a/b", OPENROUTER_MODEL_FALLBACK: "c/d" }),
+      (error: unknown) => error instanceof ConfigurationError && error.settings.join() === "OPENROUTER_API_KEY",
+    );
+  });
+});
+
+describe("fallbackModelOf", () => {
+  const primary = "a/b";
+  it("is undefined when missing, empty, whitespace, or the same as the primary", () => {
+    for (const value of [undefined, "", "   ", "a/b", " a/b "]) {
+      assert.equal(fallbackModelOf({ OPENROUTER_MODEL: primary, OPENROUTER_MODEL_FALLBACK: value?.trim() }), undefined);
+    }
+  });
+
+  it("returns the name when it differs", () => {
+    assert.equal(fallbackModelOf({ OPENROUTER_MODEL: primary, OPENROUTER_MODEL_FALLBACK: "c/d" }), "c/d");
   });
 });
 

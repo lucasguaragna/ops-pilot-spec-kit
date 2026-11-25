@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import type { NodeTraceEvent, RunResult as DomainRunResult } from "../domain/types.ts";
 
 type RunResult = DomainRunResult<NodeTraceEvent>;
-import { UnknownStrategyError } from "../domain/errors.ts";
+import { ModelUnavailableError, UnknownStrategyError } from "../domain/errors.ts";
 import { ConversationNotFoundError } from "../domain/errors.ts";
 import {
   conversationNotFoundReply,
@@ -21,7 +21,7 @@ import {
 import { ChatReply, ErrorReply } from "./schemas.ts";
 import type { LearningOutcome } from "../agents/learning-reflector.ts";
 
-const metrics = { llmCalls: 2, latencyMs: 10, promptTokens: null };
+const metrics = { llmCalls: 2, latencyMs: 10, promptTokens: null, modelUsed: null };
 const trace: RunResult["trace"] = [{ type: "answer", content: "done", node: "response" }];
 const conversation = { id: "conv-1", historyMessages: 4 };
 const context = { system: 100, tools: 200, history: 250, memories: 30, message: 10, total: 590 };
@@ -319,6 +319,8 @@ describe("summaryLogLine", () => {
     droppedSecrets,
     llmCalls: 1,
     promptTokens: null,
+    switches: [],
+    modelUsed: null,
   });
 
   const cases: [string, SummarizationStep, unknown][] = [
@@ -330,27 +332,27 @@ describe("summaryLogLine", () => {
     ],
     [
       "timeout",
-      { kind: "failed", reason: "timeout", llmCalls: 1, promptTokens: null },
+      { kind: "failed", reason: "timeout", llmCalls: 1, promptTokens: null, switches: [], modelUsed: null },
       { stream: "error", line: "Summary timed out after 30000 ms for conversation c1" },
     ],
     [
       "thrown",
-      { kind: "failed", reason: "thrown", error: new Error("boom"), llmCalls: 2, promptTokens: null },
+      { kind: "failed", reason: "thrown", error: new Error("boom"), llmCalls: 2, promptTokens: null, switches: [], modelUsed: null },
       { stream: "error", line: "Summary failed for conversation c1: Error: boom" },
     ],
     [
       "thrown, not an Error",
-      { kind: "failed", reason: "thrown", error: "boom", llmCalls: 2, promptTokens: null },
+      { kind: "failed", reason: "thrown", error: "boom", llmCalls: 2, promptTokens: null, switches: [], modelUsed: null },
       { stream: "error", line: "Summary failed for conversation c1: boom" },
     ],
     [
       "empty",
-      { kind: "failed", reason: "empty", llmCalls: 1, promptTokens: null },
+      { kind: "failed", reason: "empty", llmCalls: 1, promptTokens: null, switches: [], modelUsed: null },
       { stream: "warn", line: "Summary skipped for conversation c1: empty" },
     ],
     [
       "conflict",
-      { kind: "failed", reason: "conflict", llmCalls: 1, promptTokens: null },
+      { kind: "failed", reason: "conflict", llmCalls: 1, promptTokens: null, switches: [], modelUsed: null },
       { stream: "warn", line: "Summary skipped for conversation c1: conflict" },
     ],
     ["not due", { kind: "not_due" }, undefined],
@@ -366,5 +368,72 @@ describe("summaryLogLine", () => {
     for (const [, step] of cases) {
       assert.doesNotMatch(summaryLogLine("c1", step, 30_000)?.line ?? "", /hunter2|password/);
     }
+  });
+});
+
+describe("toHttpReply: model unavailable", () => {
+  const unavailable = { name: "ModelUnavailableError", message: "No model could answer", cause: "RateLimitError" };
+  const fallbackTrace: RunResult["trace"] = [
+    { type: "fallback", from: "p", to: "f", error: "RateLimitError", node: "router" },
+  ];
+
+  it("maps a model-unavailable error result to 503 with the primary's error class, trace, and metrics", () => {
+    const result: RunResult = { stopReason: "error", answer: null, error: unavailable, trace: fallbackTrace, metrics };
+    const reply = toHttpReply(chat({ kind: "result", result }));
+    assert.equal(reply.status, 503);
+    assert.deepEqual(reply.body, {
+      error: "model_unavailable",
+      message: "No model could answer; try again later",
+      runError: { name: "RateLimitError", message: "The run failed; details are in the server log" },
+      conversationId: "conv-1",
+      trace: fallbackTrace,
+      metrics: withHistory,
+    });
+    ErrorReply.parse(reply.body);
+  });
+
+  it("maps a thrown ModelUnavailableError to 503 without trace or metrics", () => {
+    const reply = toHttpReply(chat({ kind: "thrown", error: new ModelUnavailableError("TimeoutError", new Error("secret")) }));
+    assert.equal(reply.status, 503);
+    assert.deepEqual(reply.body, {
+      error: "model_unavailable",
+      message: "No model could answer; try again later",
+      runError: { name: "TimeoutError", message: "The run failed; details are in the server log" },
+      conversationId: "conv-1",
+    });
+    ErrorReply.parse(reply.body);
+  });
+
+  it('names the class "Error" when the failure has no cause name', () => {
+    const result: RunResult = {
+      stopReason: "error",
+      answer: null,
+      error: { name: "ModelUnavailableError", message: "No model could answer" },
+      trace,
+      metrics,
+    };
+    const body = toHttpReply(chat({ kind: "result", result })).body as { runError: { name: string } };
+    assert.equal(body.runError.name, "Error");
+  });
+
+  it("keeps 502 for an error that did not come from a model call", () => {
+    const result: RunResult = {
+      stopReason: "error",
+      answer: null,
+      error: { name: "StoreOpenError", message: "boom" },
+      trace,
+      metrics,
+    };
+    assert.equal(toHttpReply(chat({ kind: "result", result })).status, 502);
+  });
+
+  it("keeps 504 for a timeout", () => {
+    assert.equal(toHttpReply(chat({ kind: "timeout", timeoutMs: 1000 })).status, 504);
+  });
+
+  it("holds no provider text from the wrapped error", () => {
+    const error = new ModelUnavailableError("RateLimitError", new Error("PROVIDER-SECRET-TEXT sk-key"));
+    const body = JSON.stringify(toHttpReply(chat({ kind: "thrown", error })).body);
+    assert.doesNotMatch(body, /PROVIDER-SECRET-TEXT|sk-key/);
   });
 });

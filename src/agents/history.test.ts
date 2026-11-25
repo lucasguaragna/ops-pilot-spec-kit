@@ -66,7 +66,7 @@ describe("withHistory", () => {
     stopReason: "completed",
     answer: "ok",
     trace: [],
-    metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null },
+    metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null, modelUsed: null },
   };
 
   function recording(): ReasoningStrategy & { calls: { input: string; options: RunOptions }[] } {
@@ -200,7 +200,7 @@ describe("withHistory with a summary", () => {
       name: "react",
       async run(input) {
         seen.push(input);
-        return { stopReason: "completed", answer: "ok", trace: [], metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null } };
+        return { stopReason: "completed", answer: "ok", trace: [], metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null, modelUsed: null } };
       },
     };
     await withHistory(inner, history, "S\n\n").run("next", { maxIterations: 1 });

@@ -5,6 +5,7 @@ import { estimateTokens } from "../context/tokens.ts";
 import type { NewMessage } from "../domain/schemas.ts";
 import { messageLines, SUMMARY_MAX_TOKENS } from "./history.ts";
 import { looksLikeSecret } from "./learning-reflector.ts";
+import type { Switch } from "./llm-counter.ts";
 
 const SUMMARY_HEADER = "Summary of the earlier conversation (oldest messages first, merged):";
 
@@ -33,6 +34,10 @@ export type SummarizationStep =
       droppedSecrets: number;
       llmCalls: number;
       promptTokens: number | null;
+      /** The step's calls that went to the fallback model, for the trace. */
+      switches: Switch[];
+      /** The model that answered the step's last call; null when none did. */
+      modelUsed: string | null;
     }
   | {
       kind: "failed";
@@ -41,6 +46,8 @@ export type SummarizationStep =
       error?: unknown;
       llmCalls: number;
       promptTokens: number | null;
+      switches: Switch[];
+      modelUsed: string | null;
     }
   | { kind: "not_due" };
 

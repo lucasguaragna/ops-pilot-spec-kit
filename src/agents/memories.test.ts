@@ -53,7 +53,7 @@ describe("withMemories", () => {
       name: "react",
       async run(input, options) {
         calls.push({ input, options });
-        return { stopReason: "completed", answer: "ok", trace: [], metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null } } as RunResult;
+        return { stopReason: "completed", answer: "ok", trace: [], metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null, modelUsed: null } } as RunResult;
       },
     };
     return { strategy, calls };

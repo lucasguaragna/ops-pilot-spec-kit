@@ -41,6 +41,7 @@ describe("POST /chat: successful runs", () => {
       historyMessages: 0,
       recalledMemories: 0,
       promptTokens: null,
+      modelUsed: null,
       // A fake strategy declares no system prompt and the fake dependencies have no tools ("[]").
       contextBreakdown: { system: 0, tools: 1, history: 0, memories: 0, message: 6, total: 7 },
     });
@@ -81,7 +82,7 @@ describe("POST /chat: successful runs", () => {
   it("returns the real prompt tokens the strategy reported", async () => {
     const measured = fakeStrategy("react", {
       ...completed("Two alerts are firing."),
-      metrics: { llmCalls: 3, latencyMs: 15, promptTokens: 360 },
+      metrics: { llmCalls: 3, latencyMs: 15, promptTokens: 360, modelUsed: null },
     });
     const baseUrl = await startServer(settingsFor({ react: measured }));
 
@@ -118,7 +119,7 @@ describe("POST /chat: successful runs", () => {
       stopReason: "iteration_limit",
       answer: null,
       trace: [{ type: "thought", content: "still thinking" }],
-      metrics: { llmCalls: 10, latencyMs: 99, promptTokens: null },
+      metrics: { llmCalls: 10, latencyMs: 99, promptTokens: null, modelUsed: null },
     });
     const baseUrl = await startServer(settingsFor({ react: limited }));
 
@@ -270,7 +271,7 @@ describe("POST /chat: run failures", () => {
       answer: null,
       error: { name: "Error", message: "Provider returned 503" },
       trace: [{ type: "thought", content: "trying" }],
-      metrics: { llmCalls: 1, latencyMs: 5, promptTokens: null },
+      metrics: { llmCalls: 1, latencyMs: 5, promptTokens: null, modelUsed: null },
     });
     const baseUrl = await startServer(settingsFor({ react: failing }));
 
@@ -492,6 +493,7 @@ describe("POST /chat: memory", () => {
       historyMessages: 0,
       recalledMemories: 0,
       promptTokens: null,
+      modelUsed: null,
     });
     // With a userId the memory tools join the (empty) tool list, so the tools source is more than "[]".
     assert.ok(contextBreakdown.tools > 1);
@@ -606,7 +608,7 @@ describe("POST /chat: history summary", () => {
             answer: null,
             error: { name: "Error", message: "tool failed" },
             trace: [{ type: "answer" as const, content: "partial" }],
-            metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null },
+            metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null, modelUsed: null },
           }
         : completed("ok"),
     );
@@ -684,7 +686,7 @@ describe("POST /chat: the router decides", () => {
       answer: null,
       error: { name: "Error", message: "x" },
       trace: [{ type: "thought", content: "trying" }],
-      metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null },
+      metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null, modelUsed: null },
     });
     const { status, json } = await postChat(await startServer(settingsFor({ react: failing })), { message: "hi" });
 

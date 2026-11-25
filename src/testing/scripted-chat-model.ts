@@ -14,6 +14,8 @@ export type ScriptedTurn = AIMessage | Error | typeof HANG;
 interface Script {
   turns: readonly ScriptedTurn[];
   calls: number;
+  /** What `bindTools` was given, in order, so tests can check tools reached a model. */
+  bound: { tools: unknown[]; kwargs: unknown }[];
 }
 
 /**
@@ -25,7 +27,11 @@ export class ScriptedChatModel extends BaseChatModel {
 
   constructor(turns: readonly ScriptedTurn[] | Script) {
     super({});
-    this.script = Array.isArray(turns) ? { turns, calls: 0 } : (turns as Script);
+    this.script = Array.isArray(turns) ? { turns, calls: 0, bound: [] } : (turns as Script);
+  }
+
+  get bound(): readonly { tools: unknown[]; kwargs: unknown }[] {
+    return this.script.bound;
   }
 
   get calls(): number {
@@ -37,7 +43,8 @@ export class ScriptedChatModel extends BaseChatModel {
   }
 
   /** Bound copies keep the script and the callbacks, so a test's handler also sees structured calls. */
-  override bindTools(): ScriptedChatModel {
+  override bindTools(tools: unknown[], kwargs?: unknown): ScriptedChatModel {
+    this.script.bound.push({ tools, kwargs });
     const bound = new ScriptedChatModel(this.script);
     bound.callbacks = this.callbacks;
     return bound;

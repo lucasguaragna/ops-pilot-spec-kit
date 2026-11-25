@@ -2,7 +2,7 @@ import type { SummarizationStep } from "../agents/history-summarizer.ts";
 import type { LearningOutcome } from "../agents/learning-reflector.ts";
 import { toRunError } from "../agents/run-outcome.ts";
 import type { ContextBreakdown } from "../context/breakdown.ts";
-import type { ConversationNotFoundError, UnknownStrategyError } from "../domain/errors.ts";
+import { MODEL_UNAVAILABLE_ERROR_NAME, type ConversationNotFoundError, type UnknownStrategyError } from "../domain/errors.ts";
 import type { NewMessage } from "../domain/schemas.ts";
 import type { Metrics, NodeTraceEvent, RunError, RunResult } from "../domain/types.ts";
 // Type-only, so the import cycle with chat-service.ts disappears at run time.
@@ -48,6 +48,7 @@ export interface HttpReply {
 
 const RUN_FAILED_MESSAGE = "The run stopped with an error";
 const RUN_ERROR_MESSAGE = "The run failed; details are in the server log";
+const MODEL_UNAVAILABLE_MESSAGE = "No model could answer; try again later";
 
 /** The error text can come from the model provider, so only its class name reaches the client. */
 function runFailed(
@@ -70,7 +71,33 @@ function runFailed(
   };
 }
 
-/** The error behind a 502, for the server log; undefined when the outcome is not a failure. */
+/**
+ * The 503: every model a call may use failed. Like `runFailed`, the body names only an error class,
+ * here the one the primary model ended with, never provider text.
+ */
+function modelUnavailable(
+  runError: RunError,
+  outcome: ChatOutcome,
+  partial?: { trace: NodeTraceEvent[]; metrics: Metrics },
+): HttpReply {
+  return {
+    status: 503,
+    body: {
+      error: "model_unavailable",
+      message: MODEL_UNAVAILABLE_MESSAGE,
+      runError: { name: runError.cause ?? "Error", message: RUN_ERROR_MESSAGE },
+      conversationId: outcome.conversation.id,
+      ...(partial && {
+        trace: partial.trace,
+        metrics: { ...partial.metrics, ...contextMetrics(outcome) },
+      }),
+    },
+  };
+}
+
+const isModelUnavailable = (runError: RunError) => runError.name === MODEL_UNAVAILABLE_ERROR_NAME;
+
+/** The error behind a 502 or 503, for the server log; undefined when the outcome is not a failure. */
 export function failureOf(outcome: RunOutcome): RunError | undefined {
   if (outcome.kind === "thrown") return toRunError(outcome.error);
   if (outcome.kind === "result" && outcome.result.stopReason === "error") return outcome.result.error;
@@ -85,7 +112,9 @@ export function toHttpReply(outcome: ChatOutcome): HttpReply {
       const { result } = outcome;
       if (result.stopReason === "error") {
         const { trace, metrics } = result;
-        return runFailed(result.error, outcome, { trace, metrics });
+        return isModelUnavailable(result.error)
+          ? modelUnavailable(result.error, outcome, { trace, metrics })
+          : runFailed(result.error, outcome, { trace, metrics });
       }
       return {
         status: 200,
@@ -98,8 +127,10 @@ export function toHttpReply(outcome: ChatOutcome): HttpReply {
         },
       };
     }
-    case "thrown":
-      return runFailed(toRunError(outcome.error), outcome);
+    case "thrown": {
+      const runError = toRunError(outcome.error);
+      return isModelUnavailable(runError) ? modelUnavailable(runError, outcome) : runFailed(runError, outcome);
+    }
     case "timeout":
       return {
         status: 504,

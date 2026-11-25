@@ -12,6 +12,8 @@ import {
   withReflection,
   type Verdict,
 } from "./reflection.ts";
+import { providerError } from "../testing/provider-errors.ts";
+import { createResilientModel } from "./resilient-model.ts";
 import { STRUCTURED_ATTEMPTS } from "./structured-output.ts";
 
 const verdict = (value: Partial<Verdict> & { approved: boolean }) =>
@@ -30,7 +32,7 @@ function completed(
   llmCalls = 2,
   promptTokens: number | null = null,
 ): RunResult {
-  return { stopReason: "completed", answer, trace, metrics: { llmCalls, latencyMs: 0, promptTokens } };
+  return { stopReason: "completed", answer, trace, metrics: { llmCalls, latencyMs: 0, promptTokens, modelUsed: null } };
 }
 
 /** A strategy that returns scripted results in order, repeating the last, and records its inputs. */
@@ -153,7 +155,7 @@ describe("withReflection", () => {
       stopReason: "iteration_limit",
       answer: null,
       trace: openTrace.slice(0, 2),
-      metrics: { llmCalls: 4, latencyMs: 0, promptTokens: null },
+      metrics: { llmCalls: 4, latencyMs: 0, promptTokens: null, modelUsed: null },
     };
     const { model, result } = reflect([limited], [approve]);
     const run = await result;
@@ -239,7 +241,7 @@ describe("withReflection", () => {
       answer: null,
       error: { name: "Error", message: "provider down" },
       trace: [],
-      metrics: { llmCalls: 1, latencyMs: 0, promptTokens: null },
+      metrics: { llmCalls: 1, latencyMs: 0, promptTokens: null, modelUsed: null },
     };
     const { result } = reflect([completed("Opened INC-001", openTrace), failed], [reject, approve]);
     const run = await result;
@@ -360,5 +362,46 @@ describe("withReflection: abort signal", () => {
 
     assert.equal(result.stopReason, "error");
     assert.equal(result.answer, null);
+  });
+});
+
+describe("withReflection: model fallback", () => {
+  const critic = (primary: ScriptedTurn[], fallback: ScriptedTurn[]) =>
+    createResilientModel({
+      primary: { model: new ScriptedChatModel(primary), name: "p" },
+      fallback: { model: new ScriptedChatModel(fallback), name: "f" },
+      attempts: 1,
+    });
+
+  it("puts the critic's fallback event before the critique and reports the fallback", async () => {
+    const model = critic([providerError(429, "RateLimitError", "PROVIDER-SECRET-TEXT")], [approve]);
+    const inner = completed("Opened INC-001", [{ type: "answer", content: "Opened INC-001" }], 2);
+    const result = await withReflection(fakeStrategy([inner]), { model, maxReflections: 1 }).run("open", { maxIterations: 5 });
+
+    assert.equal(result.stopReason, "completed");
+    assert.deepEqual(result.trace.map((event) => event.type), ["answer", "fallback", "critique"]);
+    assert.equal(result.metrics.modelUsed, "f");
+    assert.equal(result.metrics.llmCalls, 4);
+    assert.doesNotMatch(JSON.stringify(result.trace), /PROVIDER-SECRET-TEXT/);
+  });
+
+  it("keeps the inner strategy's own fallback events and model when the critic needs none", async () => {
+    const model = critic([approve], [approve]);
+    const inner = completed("Opened INC-001", [{ type: "fallback", from: "p", to: "f", error: "RateLimitError" }, { type: "answer", content: "Opened INC-001" }], 3);
+    inner.metrics.modelUsed = "f";
+    const result = await withReflection(fakeStrategy([inner]), { model, maxReflections: 1 }).run("open", { maxIterations: 5 });
+
+    assert.deepEqual(result.trace.map((event) => event.type), ["fallback", "answer", "critique"]);
+    assert.equal(result.metrics.modelUsed, "p");
+  });
+
+  it("keeps the answer when the critic fails on every model, and still traces the switch", async () => {
+    const down = () => providerError(503, "InternalServerError");
+    const model = critic([down()], [down()]);
+    const inner = completed("Opened INC-001", [{ type: "answer", content: "Opened INC-001" }]);
+    const result = await withReflection(fakeStrategy([inner]), { model, maxReflections: 1 }).run("open", { maxIterations: 5 });
+
+    assert.equal(result.stopReason, "completed");
+    assert.deepEqual(result.trace.map((event) => event.type), ["answer", "fallback", "thought"]);
   });
 });

@@ -96,7 +96,12 @@ async function summarize(
     settings.summaryTimeoutMs,
   );
   // The calls that started count, and their tokens count where the provider reported usage.
-  const spent = { llmCalls: counter.count, promptTokens: counter.promptTokens };
+  const spent = {
+    llmCalls: counter.count,
+    promptTokens: counter.promptTokens,
+    switches: counter.switches,
+    modelUsed: counter.modelUsed,
+  };
   if (timed.kind === "timeout") return { kind: "failed", reason: "timeout", ...spent };
   if (timed.kind === "thrown") return { kind: "failed", reason: "thrown", error: timed.error, ...spent };
 

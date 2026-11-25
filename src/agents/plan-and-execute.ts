@@ -4,7 +4,7 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import { z } from "zod";
 import type { ReasoningStrategy, RunResult, TraceEvent } from "../domain/types.ts";
-import { LlmCallCounter } from "./llm-counter.ts";
+import { fallbackEvents, LlmCallCounter } from "./llm-counter.ts";
 import type { StrategyDependencies } from "./react.ts";
 import { isIterationLimitError, toRunError } from "./run-outcome.ts";
 import { structured } from "./structured-output.ts";
@@ -150,14 +150,20 @@ export function createPlanExecuteStrategy(
     }
   }
 
-  function buildGraph(stepCap: number) {
+  /** Puts the fallback events of the model calls a node just made before the events it produced. */
+  const withSwitches = (counter: LlmCallCounter, update: Partial<PEState>): Partial<PEState> => ({
+    ...update,
+    trace: [...fallbackEvents(counter.takeSwitches()), ...(update.trace ?? [])],
+  });
+
+  function buildGraph(stepCap: number, counter: LlmCallCounter) {
     return new StateGraph(PEState)
       .addNode("planner", async (state, config) => {
         const decision = await structured("planner", planSchema, () =>
           planner.invoke([new SystemMessage(plannerPrompt), new HumanMessage(state.input)], config),
         );
         const steps = cleanSteps(decision.steps);
-        return { plan: steps, trace: [{ type: "plan", steps }] };
+        return withSwitches(counter, { plan: steps, trace: [{ type: "plan", steps }] });
       })
       .addNode("executor", async (state, config) => {
         const [step = "", ...rest] = state.plan;
@@ -180,7 +186,7 @@ export function createPlanExecuteStrategy(
         }
         if (observations.length === 0 && response.text) trace.push({ type: "thought", content: response.text });
         const done: Done = [step, observations.join("\n") || response.text];
-        return { plan: rest, done: [done], trace };
+        return withSwitches(counter, { plan: rest, done: [done], trace });
       })
       .addNode("replanner", async (state, config) => {
         const request =
@@ -189,12 +195,12 @@ export function createPlanExecuteStrategy(
         const decision = await structured("replanner", replanSchema, () =>
           replanner.invoke([new SystemMessage(REPLANNER_PROMPT), new HumanMessage(request)], config),
         );
-        return applyReplan(decision, state.plan);
+        return withSwitches(counter, applyReplan(decision, state.plan));
       })
       .addNode("responder", async (state, config) => {
         const request = `Request: ${state.input}\n\nCompleted steps:\n${describeDone(state.done)}`;
         const response = await model.invoke([new SystemMessage(RESPONDER_PROMPT), new HumanMessage(request)], config);
-        return { answer: response.text, trace: [{ type: "answer", content: response.text }] };
+        return withSwitches(counter, { answer: response.text, trace: [{ type: "answer", content: response.text }] });
       })
       .addEdge(START, "planner")
       // An empty first plan goes straight to whichever node writes the answer.
@@ -226,7 +232,7 @@ export function createPlanExecuteStrategy(
       const started = Date.now();
       const counter = new LlmCallCounter();
       const stepCap = Math.min(maxIterations, MAX_STEPS);
-      const graph = buildGraph(stepCap);
+      const graph = buildGraph(stepCap, counter);
 
       let state: PEState | undefined;
       const outcome = await (async () => {
@@ -247,11 +253,13 @@ export function createPlanExecuteStrategy(
         }
       })();
 
-      const trace = state?.trace ?? [];
+      // Switches of a node that then failed were never taken by it, so they close the trace.
+      const trace = [...(state?.trace ?? []), ...fallbackEvents(counter.takeSwitches())];
       const metrics = {
         llmCalls: counter.count,
         latencyMs: Date.now() - started,
         promptTokens: counter.promptTokens,
+        modelUsed: counter.modelUsed,
       };
       if (outcome.stopReason === "completed") {
         return { stopReason: "completed", answer: state?.answer ?? "", trace, metrics };

@@ -94,3 +94,20 @@ export class ConversationNotFoundError extends Error {
     this.name = "ConversationNotFoundError";
   }
 }
+
+/**
+ * A model call failed on every model it may use (the primary after its retries and, when set, the
+ * fallback). Not a DomainError: the model never sees it. `causeName` is the class name of the error
+ * the primary model ended with; the provider's message stays in `cause` and out of replies.
+ */
+export const MODEL_UNAVAILABLE_ERROR_NAME = "ModelUnavailableError";
+
+export class ModelUnavailableError extends Error {
+  constructor(
+    readonly causeName: string,
+    cause?: unknown,
+  ) {
+    super("No model could answer", { cause });
+    this.name = MODEL_UNAVAILABLE_ERROR_NAME;
+  }
+}

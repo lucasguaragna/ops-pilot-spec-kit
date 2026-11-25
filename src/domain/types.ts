@@ -8,7 +8,12 @@ export type TraceEvent =
   /** Added by the graph, never by a strategy: the history was summarized for this request. */
   | { type: "summarize"; content: string; absorbed: number }
   /** Added by the graph's router: which strategy runs, why, and who decided. */
-  | { type: "route"; route: Route; reason: string; source: RouteSource };
+  | { type: "route"; route: Route; reason: string; source: RouteSource }
+  /**
+   * A model call switched from the primary model to the fallback model. `error` is the class name
+   * of the error that ended the primary attempts, never provider text.
+   */
+  | { type: "fallback"; from: string; to: string; error: string };
 
 /** The strategies the production graph can run. Each is also the name of its graph node. */
 export type Route = "react" | "plan-execute" | "reflect";
@@ -36,12 +41,16 @@ export interface Metrics {
    * reported usage. Null when none did.
    */
   promptTokens: number | null;
+  /** The model that answered the last finished call; null when no call did. */
+  modelUsed: string | null;
 }
 
 /** Plain data, not an Error instance, so results stay printable. Never holds a secret. */
 export interface RunError {
   name: string;
   message: string;
+  /** Class name of the wrapped error, set when a model call failed on every model. */
+  cause?: string;
 }
 
 export type StopReason = "completed" | "iteration_limit" | "error";

@@ -5,6 +5,8 @@ import { ScriptedChatModel, textTurn, toolCallTurn, withUsage } from "../testing
 import { HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { providerError } from "../testing/provider-errors.ts";
+import { createResilientModel } from "./resilient-model.ts";
 import { createReactStrategy, GROUNDING_ATTEMPTS, hasToolResult, SYSTEM_PROMPT } from "./react.ts";
 import { createTools } from "./tools.ts";
 
@@ -185,5 +187,48 @@ describe("react strategy: abort signal", () => {
 
     assert.equal(result.stopReason, "error");
     assert.equal(model.calls, 1);
+  });
+});
+
+describe("react strategy: model fallback", () => {
+  const resilient = (primary: ScriptedChatModel, fallback?: ScriptedChatModel) =>
+    createResilientModel({
+      primary: { model: primary, name: "p" },
+      fallback: fallback && { model: fallback, name: "f" },
+      attempts: 1,
+    });
+
+  it("starts the trace with the fallback event and reports the fallback as the model used", async () => {
+    const model = resilient(
+      new ScriptedChatModel([providerError(429, "RateLimitError", "PROVIDER-SECRET-TEXT")]),
+      new ScriptedChatModel([toolCallTurn("list_alerts", { status: "firing" }), textTurn("Three alerts.")]),
+    );
+    const result = await createReactStrategy({ model, tools: [...createTools(createStore())] }).run("What is firing?", { maxIterations: 5 });
+
+    assert.equal(result.stopReason, "completed");
+    assert.deepEqual(result.trace[0], { type: "fallback", from: "p", to: "f", error: "RateLimitError" });
+    assert.equal(result.trace.filter((event) => event.type === "fallback").length, 2);
+    assert.equal(result.metrics.modelUsed, "f");
+    assert.equal(result.metrics.llmCalls, 4);
+    assert.doesNotMatch(JSON.stringify(result.trace), /PROVIDER-SECRET-TEXT/);
+  });
+
+  it("adds no fallback event when the primary answers (SC-004)", async () => {
+    const model = resilient(new ScriptedChatModel([textTurn("Fine.")]), new ScriptedChatModel([textTurn("fb")]));
+    const result = await createReactStrategy({ model, tools: [...createTools(createStore())] }).run("hi", { maxIterations: 5 });
+
+    assert.equal(result.trace.some((event) => event.type === "fallback"), false);
+    assert.equal(result.metrics.modelUsed, "p");
+    assert.equal(result.metrics.llmCalls, GROUNDING_ATTEMPTS);
+  });
+
+  it("reports a model-unavailable error with the class name and the switches so far", async () => {
+    const model = resilient(new ScriptedChatModel([providerError(429, "RateLimitError")]), new ScriptedChatModel([providerError(503, "InternalServerError")]));
+    const result = await createReactStrategy({ model, tools: [] }).run("hi", { maxIterations: 5 });
+
+    assert.equal(result.stopReason, "error");
+    if (result.stopReason === "error") assert.deepEqual(result.error, { name: "ModelUnavailableError", message: "No model could answer", cause: "RateLimitError" });
+    assert.equal(result.trace.filter((event) => event.type === "fallback").length, 1);
+    assert.equal(result.metrics.modelUsed, null);
   });
 });

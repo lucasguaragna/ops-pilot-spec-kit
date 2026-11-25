@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import type { RunResult, TraceEvent } from "../domain/types.ts";
 import { finalizeTrace, tagNode } from "./node-trace.ts";
 
-const metrics = { llmCalls: 1, latencyMs: 1, promptTokens: null };
+const metrics = { llmCalls: 1, latencyMs: 1, promptTokens: null, modelUsed: null };
 const completed = (trace: TraceEvent[]): RunResult => ({ stopReason: "completed", answer: "done", trace, metrics });
 
 describe("tagNode", () => {

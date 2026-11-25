@@ -78,7 +78,7 @@ describe("ChatRequest: conversationId", () => {
 
 describe("reply schemas: conversation fields", () => {
   const id = "3f0c1f6e-8d1e-4c43-9c8e-5f0a3b2d9a10";
-  const metrics = { llmCalls: 1, latencyMs: 2, historyMessages: 0, recalledMemories: 0, promptTokens: null, contextBreakdown: breakdown };
+  const metrics = { llmCalls: 1, latencyMs: 2, historyMessages: 0, recalledMemories: 0, promptTokens: null, modelUsed: null, contextBreakdown: breakdown };
 
   it("requires conversationId and historyMessages on a 200", () => {
     const reply = { answer: "ok", stopReason: "completed", trace: [], metrics, conversationId: id };
@@ -128,7 +128,7 @@ describe("reply schemas: recalledMemories", () => {
       answer: "ok",
       stopReason: "completed",
       trace: [],
-      metrics: { llmCalls: 1, latencyMs: 2, historyMessages: 0, recalledMemories: 3, promptTokens: null, contextBreakdown: breakdown },
+      metrics: { llmCalls: 1, latencyMs: 2, historyMessages: 0, recalledMemories: 3, promptTokens: null, modelUsed: null, contextBreakdown: breakdown },
     };
     assert.ok(ChatReply.safeParse(reply).success);
     for (const recalledMemories of [undefined, -1, 1.5]) {
@@ -143,7 +143,7 @@ describe("reply schemas: promptTokens", () => {
     answer: "ok",
     stopReason: "completed",
     trace: [],
-    metrics: { llmCalls: 1, latencyMs: 2, historyMessages: 0, recalledMemories: 0, promptTokens: 450, contextBreakdown: breakdown },
+    metrics: { llmCalls: 1, latencyMs: 2, historyMessages: 0, recalledMemories: 0, promptTokens: 450, modelUsed: null, contextBreakdown: breakdown },
   };
 
   it("accepts a non-negative integer and null", () => {
@@ -166,6 +166,7 @@ describe("MetricsSchema: contextBreakdown", () => {
     historyMessages: 0,
     recalledMemories: 0,
     promptTokens: null,
+    modelUsed: null,
     contextBreakdown: breakdown,
   };
 
@@ -191,7 +192,7 @@ describe("MetricsSchema: contextBreakdown", () => {
 });
 
 describe("reply schemas: summarize event", () => {
-  const metrics = { llmCalls: 1, latencyMs: 2, historyMessages: 8, recalledMemories: 0, promptTokens: null, contextBreakdown: breakdown };
+  const metrics = { llmCalls: 1, latencyMs: 2, historyMessages: 8, recalledMemories: 0, promptTokens: null, modelUsed: null, contextBreakdown: breakdown };
   const reply = (event: unknown) => ({ conversationId: "c1", answer: "ok", stopReason: "completed", trace: [event], metrics });
 
   it("accepts a summarize event in a chat reply", () => {
@@ -225,7 +226,7 @@ describe("reply schemas: route event", () => {
     answer: "ok",
     stopReason: "completed",
     trace: [event],
-    metrics: { llmCalls: 1, latencyMs: 1, historyMessages: 0, recalledMemories: 0, promptTokens: null, contextBreakdown: breakdown },
+    metrics: { llmCalls: 1, latencyMs: 1, historyMessages: 0, recalledMemories: 0, promptTokens: null, modelUsed: null, contextBreakdown: breakdown },
   });
 
   it("accepts a route event", () => {
@@ -241,5 +242,57 @@ describe("reply schemas: route event", () => {
   it("rejects an unknown route or source", () => {
     assert.equal(ChatReply.safeParse(reply({ ...route, route: "nope" })).success, false);
     assert.equal(ChatReply.safeParse(reply({ ...route, source: "guess" })).success, false);
+  });
+});
+
+describe("reply schemas: model fallback", () => {
+  const metrics = {
+    llmCalls: 3,
+    latencyMs: 2,
+    historyMessages: 0,
+    recalledMemories: 0,
+    promptTokens: null,
+    modelUsed: "f",
+    contextBreakdown: breakdown,
+  };
+  const event = { node: "react", type: "fallback", from: "p", to: "f", error: "RateLimitError" };
+  const reply = { conversationId: "c1", answer: "ok", stopReason: "completed", trace: [event], metrics };
+
+  it("accepts a fallback event in a chat reply", () => {
+    assert.ok(ChatReply.safeParse(reply).success);
+  });
+
+  it("rejects a fallback event with an empty or missing field", () => {
+    for (const field of ["from", "to", "error"] as const) {
+      for (const value of ["", undefined]) {
+        const broken = { ...event, [field]: value };
+        assert.equal(ChatReply.safeParse({ ...reply, trace: [broken] }).success, false, `${field}=${String(value)}`);
+      }
+    }
+  });
+
+  it("requires modelUsed in the metrics, accepts null, and rejects an empty name", () => {
+    assert.ok(MetricsSchema.safeParse(metrics).success);
+    assert.ok(MetricsSchema.safeParse({ ...metrics, modelUsed: null }).success);
+    assert.equal(MetricsSchema.safeParse({ ...metrics, modelUsed: "" }).success, false);
+    const { modelUsed: _omitted, ...without } = metrics;
+    assert.equal(MetricsSchema.safeParse(without).success, false);
+  });
+
+  const unavailable = {
+    error: "model_unavailable",
+    message: "No model could answer; try again later",
+    runError: { name: "RateLimitError", message: "The run failed; details are in the server log" },
+    conversationId: "c1",
+  };
+
+  it("accepts the model_unavailable reply with or without trace and metrics", () => {
+    assert.ok(ErrorReply.safeParse(unavailable).success);
+    assert.ok(ErrorReply.safeParse({ ...unavailable, trace: [event], metrics: { ...metrics, modelUsed: null } }).success);
+  });
+
+  it("rejects a model_unavailable reply without conversationId", () => {
+    const { conversationId: _omitted, ...without } = unavailable;
+    assert.equal(ErrorReply.safeParse(without).success, false);
   });
 });

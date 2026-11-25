@@ -3,7 +3,7 @@ import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { z } from "zod";
 import { addPromptTokens } from "../context/tokens.ts";
 import type { ReasoningStrategy, RunResult, TraceEvent } from "../domain/types.ts";
-import { LlmCallCounter } from "./llm-counter.ts";
+import { fallbackEvents, LlmCallCounter } from "./llm-counter.ts";
 import { toRunError } from "./run-outcome.ts";
 import { structured } from "./structured-output.ts";
 import { carrySystemPrompt } from "./system-prompt.ts";
@@ -143,10 +143,13 @@ export function withReflection(strategy: ReasoningStrategy, options: ReflectionO
       let trace: TraceEvent[] = [];
       let baseCalls = 0;
       let basePromptTokens: number | null = null;
+      // The model of the newest finished call: the inner strategy's, then the critic's or the rewrite's.
+      let modelUsed: string | null = null;
       const metrics = () => ({
         llmCalls: baseCalls + counter.count,
         latencyMs: Date.now() - started,
         promptTokens: addPromptTokens(basePromptTokens, counter.promptTokens),
+        modelUsed,
       });
 
       try {
@@ -155,6 +158,7 @@ export function withReflection(strategy: ReasoningStrategy, options: ReflectionO
           trace = [...trace, ...attempt.trace];
           baseCalls += attempt.metrics.llmCalls;
           basePromptTokens = addPromptTokens(basePromptTokens, attempt.metrics.promptTokens);
+          modelUsed = attempt.metrics.modelUsed ?? modelUsed;
           if (attempt.stopReason !== "completed") return { ...attempt, trace, metrics: metrics() };
 
           const { answer } = attempt;
@@ -162,7 +166,7 @@ export function withReflection(strategy: ReasoningStrategy, options: ReflectionO
           const keepAnswer = (error: Error): RunResult => ({
             stopReason: "completed",
             answer,
-            trace: [...trace, skippedReflection(error)],
+            trace: [...trace, ...fallbackEvents(counter.takeSwitches()), skippedReflection(error)],
             metrics: metrics(),
           });
 
@@ -170,12 +174,13 @@ export function withReflection(strategy: ReasoningStrategy, options: ReflectionO
           const verdict = await structured("critic", verdictSchema, () =>
             critic.invoke(criticMessages(input, answer, trace), config),
           ).catch(asError);
+          modelUsed = counter.modelUsed ?? modelUsed;
           if (verdict instanceof Error) {
             // An abort is not a critic failure: it must end the run instead of keeping the answer.
             runOptions.signal?.throwIfAborted();
             return keepAnswer(verdict);
           }
-          trace = [...trace, toCritique(verdict)];
+          trace = [...trace, ...fallbackEvents(counter.takeSwitches()), toCritique(verdict)];
 
           const step = nextStep(verdict, regenerations, maxReflections);
           if (step === "stop") return { stopReason: "completed", answer, trace, metrics: metrics() };
@@ -186,6 +191,7 @@ export function withReflection(strategy: ReasoningStrategy, options: ReflectionO
             const reply = await model
               .invoke(rewriteMessages(input, answer, verdict.feedback, trace), config)
               .catch(asError);
+            modelUsed = counter.modelUsed ?? modelUsed;
             if (reply instanceof Error) {
               runOptions.signal?.throwIfAborted();
               return keepAnswer(reply);
@@ -194,13 +200,19 @@ export function withReflection(strategy: ReasoningStrategy, options: ReflectionO
             attempt = {
               stopReason: "completed",
               answer: reply.text,
-              trace: [{ type: "answer", content: reply.text }],
-              metrics: { llmCalls: 0, latencyMs: 0, promptTokens: null },
+              trace: [...fallbackEvents(counter.takeSwitches()), { type: "answer", content: reply.text }],
+              metrics: { llmCalls: 0, latencyMs: 0, promptTokens: null, modelUsed: null },
             };
           }
         }
       } catch (error) {
-        return { stopReason: "error", answer: null, error: toRunError(error), trace, metrics: metrics() };
+        return {
+          stopReason: "error",
+          answer: null,
+          error: toRunError(error),
+          trace: [...trace, ...fallbackEvents(counter.takeSwitches())],
+          metrics: metrics(),
+        };
       }
     },
   };

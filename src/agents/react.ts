@@ -2,9 +2,9 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { createAgent, createMiddleware, modelCallLimitMiddleware } from "langchain";
-import type { ReasoningStrategy, RunResult } from "../domain/types.ts";
+import type { ReasoningStrategy, RunResult, TraceEvent } from "../domain/types.ts";
 import { lastAnswer, messagesToTrace } from "../trace/from-messages.ts";
-import { LlmCallCounter } from "./llm-counter.ts";
+import { fallbackEvents, LlmCallCounter } from "./llm-counter.ts";
 import { isIterationLimitError, toRunError } from "./run-outcome.ts";
 
 export const SYSTEM_PROMPT =
@@ -79,11 +79,13 @@ export function createReactStrategy({ model, tools }: StrategyDependencies): Rea
         }
       })();
 
-      const trace = messagesToTrace(messages);
+      // Switches come first: they are about the model's calls, which all happen before the events read.
+      const trace: TraceEvent[] = [...fallbackEvents(counter.switches), ...messagesToTrace(messages)];
       const metrics = {
         llmCalls: counter.count,
         latencyMs: Date.now() - started,
         promptTokens: counter.promptTokens,
+        modelUsed: counter.modelUsed,
       };
       if (outcome.stopReason === "completed") {
         return { stopReason: "completed", answer: lastAnswer(trace), trace, metrics };

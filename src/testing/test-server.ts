@@ -61,7 +61,7 @@ export function fakeRouter(
     calls,
     async route(input) {
       calls.push(input);
-      return { decision, llmCalls, promptTokens: null };
+      return { decision, llmCalls, promptTokens: null, switches: [], modelUsed: null };
     },
   };
 }
@@ -74,7 +74,7 @@ export const completed = (answer: string): RunResult => ({
     { type: "observation", tool: "list_alerts", content: "[]" },
     { type: "answer", content: answer },
   ],
-  metrics: { llmCalls: 2, latencyMs: 15, promptTokens: null },
+  metrics: { llmCalls: 2, latencyMs: 15, promptTokens: null, modelUsed: null },
 });
 
 /** App settings that serve the given strategies over fake stores and a model that learns nothing. */

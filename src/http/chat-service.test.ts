@@ -82,7 +82,7 @@ const completed = (answer: string): RunResult => ({
   stopReason: "completed",
   answer,
   trace: [],
-  metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null },
+  metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null, modelUsed: null },
 });
 
 function recordingStrategy(run: () => Promise<RunResult>): ReasoningStrategy & { inputs: string[] } {
@@ -188,7 +188,7 @@ describe("runChat: conversation", () => {
   const unsaved: [string, () => Promise<RunResult>, Partial<AppSettings>][] = [
     [
       "a run that ends at the iteration limit",
-      async () => ({ stopReason: "iteration_limit", answer: null, trace: [], metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null } }),
+      async () => ({ stopReason: "iteration_limit", answer: null, trace: [], metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null, modelUsed: null } }),
       {},
     ],
     [
@@ -198,7 +198,7 @@ describe("runChat: conversation", () => {
         answer: null,
         error: { name: "Error", message: "x" },
         trace: [],
-        metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null },
+        metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null, modelUsed: null },
       }),
       {},
     ],
@@ -559,7 +559,7 @@ describe("runChat: summarization", () => {
       answer: null,
       error: { name: "Error", message: "tool failed" },
       trace: [{ type: "answer", content: "partial" }],
-      metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null },
+      metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null, modelUsed: null },
     });
 
     it("keeps the stored summary, puts the event first in the trace, and uses the summary on the next request", async () => {
@@ -950,7 +950,7 @@ describe("runChat: learning step", () => {
   const unfinished: [string, () => Promise<RunResult>, Partial<AppSettings>][] = [
     [
       "the iteration limit",
-      async () => ({ stopReason: "iteration_limit", answer: null, trace: [], metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null } }),
+      async () => ({ stopReason: "iteration_limit", answer: null, trace: [], metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null, modelUsed: null } }),
       {},
     ],
     [

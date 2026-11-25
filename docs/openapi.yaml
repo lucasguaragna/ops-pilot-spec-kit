@@ -326,6 +326,28 @@ paths:
                       name: TypeError
                       message: The run failed; details are in the server log
                     conversationId: 3f0c1f6e-8d1e-4c43-9c8e-5f0a3b2d9a10
+        '503':
+          description: |
+            No model could answer: the primary model failed after its retries and so did the
+            fallback (or none is set). `runError.name` is the class name of the error the primary
+            model ended with. Try again later; nothing was saved to the conversation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelUnavailableError'
+              example:
+                error: model_unavailable
+                message: No model could answer; try again later
+                runError:
+                  name: RateLimitError
+                  message: The run failed; details are in the server log
+                conversationId: 3f0c1f6e-8d1e-4c43-9c8e-5f0a3b2d9a10
+                trace:
+                  - node: router
+                    type: fallback
+                    from: primary/model:free
+                    to: backup/model:free
+                    error: RateLimitError
         '504':
           description: |
             The run did not finish within `timeoutMs` (180000 by default) and was cancelled. No
@@ -414,6 +436,9 @@ components:
         - `route`: which strategy runs, why, and who decided (`source`: `router`, `override` or
           `fallback`). Exactly one per reply, from the `router` node.
         - `critique`: the critic's verdict (only on the `reflect` route).
+        - `fallback`: one model call went from the primary model to the fallback model (`from`, `to`,
+          and `error`, the class name of the error that ended the primary attempts). It comes before
+          the events of the fallback model's answer. Absent when no call fell back.
         - `answer`: a candidate or final answer. With reflection there can be several; the last one
           is the reply's `answer`, and it comes from the `response` node.
 
@@ -427,6 +452,7 @@ components:
         - $ref: '#/components/schemas/CritiqueEvent'
         - $ref: '#/components/schemas/AnswerEvent'
         - $ref: '#/components/schemas/RouteEvent'
+        - $ref: '#/components/schemas/FallbackEvent'
       discriminator:
         propertyName: type
         mapping:
@@ -437,6 +463,16 @@ components:
           critique: '#/components/schemas/CritiqueEvent'
           answer: '#/components/schemas/AnswerEvent'
           route: '#/components/schemas/RouteEvent'
+          fallback: '#/components/schemas/FallbackEvent'
+
+    FallbackEvent:
+      type: object
+      required: [type, from, to, error]
+      properties:
+        type: { type: string, const: fallback }
+        from: { type: string, minLength: 1, description: "The primary model name." }
+        to: { type: string, minLength: 1, description: "The fallback model name." }
+        error: { type: string, minLength: 1, description: "Class name of the primary model's error, never provider text." }
 
     ThoughtEvent:
       type: object
@@ -518,13 +554,21 @@ components:
 
     Metrics:
       type: object
-      required: [llmCalls, latencyMs, historyMessages]
+      required: [llmCalls, latencyMs, historyMessages, modelUsed]
       description: Cost of the run.
       properties:
+        modelUsed:
+          type: [string, 'null']
+          minLength: 1
+          description: |
+            The model of the last call that got an answer: the primary, or the fallback when that
+            call fell back. `null` when no call got an answer.
         llmCalls:
           type: integer
           minimum: 0
-          description: Number of model calls, including the critic's.
+          description: |
+            Number of requests sent to a model, including the critic's, each retry, and the
+            fallback attempt.
         latencyMs:
           type: integer
           minimum: 0
@@ -586,6 +630,27 @@ components:
         trace:
           type: array
           description: Steps taken before the failure. Absent when the strategy threw.
+          items:
+            $ref: '#/components/schemas/TraceEvent'
+        metrics:
+          $ref: '#/components/schemas/Metrics'
+
+    ModelUnavailableError:
+      type: object
+      required: [error, message, runError, conversationId]
+      properties:
+        error: { type: string, const: model_unavailable }
+        message: { type: string }
+        conversationId: { type: string, description: "The conversation the request ran in. Nothing was saved to it." }
+        runError:
+          type: object
+          required: [name, message]
+          properties:
+            name: { type: string, description: "Class name of the primary model's final error, such as `RateLimitError`." }
+            message: { type: string, description: "Fixed text; the real message is in the server log." }
+        trace:
+          type: array
+          description: Steps taken before the failure. Absent when the run threw.
           items:
             $ref: '#/components/schemas/TraceEvent'
         metrics:

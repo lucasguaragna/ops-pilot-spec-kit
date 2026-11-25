@@ -21,6 +21,8 @@ import {
   REPLAN_TOOL_NAME,
   type Replan,
 } from "./plan-and-execute.ts";
+import { providerError } from "../testing/provider-errors.ts";
+import { createResilientModel } from "./resilient-model.ts";
 import { STRUCTURED_ATTEMPTS } from "./structured-output.ts";
 import { createTools } from "./tools.ts";
 
@@ -352,5 +354,43 @@ describe("plan-execute strategy: abort signal", () => {
     assert.equal(result.stopReason, "error");
     assert.equal(secondCalls, 0);
     assert.equal(model.calls, 2, "planner and the first executor turn only");
+  });
+});
+
+describe("plan-execute strategy: model fallback", () => {
+  it("puts the fallback event of a call before the events that call produced", async () => {
+    // The planner's call fails on the primary, the executor's and the replanner's calls do not.
+    const model = createResilientModel({
+      primary: { model: new ScriptedChatModel([providerError(503, "InternalServerError", "PROVIDER-SECRET-TEXT"), listFiring, replan({ action: "finish", answer: "Done." })]), name: "p" },
+      fallback: { model: new ScriptedChatModel([plan(["List firing alerts"])]), name: "f" },
+      attempts: 1,
+    });
+    const strategy = createPlanExecuteStrategy({ model, tools: [...createTools(createStore())] });
+    const result = await strategy.run("What is firing?", { maxIterations: 10 });
+
+    assert.equal(result.stopReason, "completed");
+    assert.deepEqual(
+      result.trace.map((event) => event.type),
+      ["fallback", "plan", "action", "observation", "answer"],
+    );
+    assert.deepEqual(result.trace[0], { type: "fallback", from: "p", to: "f", error: "InternalServerError" });
+    assert.equal(result.metrics.modelUsed, "p");
+    assert.equal(result.metrics.llmCalls, 4);
+    assert.doesNotMatch(JSON.stringify(result.trace), /PROVIDER-SECRET-TEXT/);
+  });
+
+  it("keeps the switches of a node that then fails at the end of the trace", async () => {
+    const down = () => providerError(503, "InternalServerError");
+    const model = createResilientModel({
+      primary: { model: new ScriptedChatModel([down()]), name: "p" },
+      fallback: { model: new ScriptedChatModel([down()]), name: "f" },
+      attempts: 1,
+    });
+    const result = await createPlanExecuteStrategy({ model, tools: [] }).run("hi", { maxIterations: 10 });
+
+    assert.equal(result.stopReason, "error");
+    if (result.stopReason === "error") assert.equal(result.error.cause, "InternalServerError");
+    assert.deepEqual(result.trace.map((event) => event.type), ["fallback"]);
+    assert.equal(result.metrics.modelUsed, null);
   });
 });

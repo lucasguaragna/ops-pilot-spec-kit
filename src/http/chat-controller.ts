@@ -28,7 +28,10 @@ export function postChat(settings: ResolvedSettings): RequestHandler {
       try {
         const outcome = await runChat(settings, parsed.data);
         const failure = failureOf(outcome);
-        if (failure) console.error(`Run failed: ${failure.name}: ${failure.message}`);
+        if (failure) {
+          const cause = failure.cause === undefined ? "" : ` (cause: ${failure.cause})`;
+          console.error(`Run failed: ${failure.name}: ${failure.message}${cause}`);
+        }
         reply = toHttpReply(outcome);
       } catch (error) {
         if (error instanceof UnknownStrategyError) reply = unknownStrategyReply(error);

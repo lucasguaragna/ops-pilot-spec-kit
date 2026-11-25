@@ -44,6 +44,14 @@ export const TraceEventSchema = z.discriminatedUnion("type", [
     reason: z.string(),
     source: z.enum(["router", "override", "fallback"]),
   }),
+  z.object({
+    node: Node,
+    type: z.literal("fallback"),
+    from: z.string().min(1),
+    to: z.string().min(1),
+    /** A class name, never provider text. */
+    error: z.string().min(1),
+  }),
 ]);
 
 /** Estimated tokens of the starting context per source; the total is their sum. */
@@ -63,6 +71,8 @@ export const MetricsSchema = z.object({
   recalledMemories: Count,
   /** Real input tokens the provider reported over every model call of the run; null when none did. */
   promptTokens: Count.nullable(),
+  /** The model that answered the last finished call; null when no call did. */
+  modelUsed: z.string().min(1).nullable(),
   /** Estimates (characters / 4) of the starting context by source. HTTP-only, like historyMessages. */
   contextBreakdown: ContextBreakdownSchema,
 });
@@ -89,6 +99,14 @@ export const ErrorReply = z.discriminatedUnion("error", [
   }),
   z.object({
     error: z.literal("run_failed"),
+    message: z.string(),
+    runError: z.object({ name: z.string(), message: z.string() }),
+    conversationId: z.string().min(1),
+    trace: z.array(TraceEventSchema).optional(),
+    metrics: MetricsSchema.optional(),
+  }),
+  z.object({
+    error: z.literal("model_unavailable"),
     message: z.string(),
     runError: z.object({ name: z.string(), message: z.string() }),
     conversationId: z.string().min(1),

@@ -89,7 +89,7 @@ describe("scenario checks", () => {
 });
 
 describe("judge", () => {
-  const metrics = { llmCalls: 1, latencyMs: 1, promptTokens: null };
+  const metrics = { llmCalls: 1, latencyMs: 1, promptTokens: null, modelUsed: null };
   const [c1] = SCENARIOS;
 
   it("fails a run that did not complete, whatever the state", () => {

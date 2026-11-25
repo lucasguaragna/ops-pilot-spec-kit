@@ -24,6 +24,8 @@ function formatBody(event: TraceEvent): string {
       return `[observation] ${event.tool}: ${event.content}`;
     case "route":
       return `[route] ${event.route} (${event.source}): ${event.reason}`;
+    case "fallback":
+      return `[fallback] ${event.from} -> ${event.to} (${event.error})`;
     case "summarize":
       return `[summarize] (${event.absorbed} messages): ${event.content.trimEnd()}`;
     case "plan":

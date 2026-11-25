@@ -67,12 +67,12 @@ describe("formatEvent: summarize", () => {
 
 describe("formatMetrics", () => {
   it("prints LLM calls and latency", () => {
-    assert.equal(formatMetrics({ llmCalls: 3, latencyMs: 120, promptTokens: null }), "llmCalls: 3 | latencyMs: 120");
+    assert.equal(formatMetrics({ llmCalls: 3, latencyMs: 120, promptTokens: null, modelUsed: null }), "llmCalls: 3 | latencyMs: 120");
   });
 });
 
 describe("formatResult", () => {
-  const metrics = { llmCalls: 2, latencyMs: 50, promptTokens: null };
+  const metrics = { llmCalls: 2, latencyMs: 50, promptTokens: null, modelUsed: null };
 
   it("prints name, trace, answer, stop reason, and metrics in order", () => {
     const result: RunResult = {

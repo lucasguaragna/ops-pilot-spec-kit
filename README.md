@@ -117,11 +117,12 @@ npm ci
 cp .env.example .env
 ```
 
-Fill in `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` in `.env`. Never commit `.env`.
+Fill in `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` in `.env`. Add `OPENROUTER_MODEL_FALLBACK` if you want a second model (see [Model fallback](#model-fallback)). Never commit `.env`.
 
 | Variable | Used by | Default |
 | --- | --- | --- |
 | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | HTTP API, `arena`, `bench` | none (required for those) |
+| `OPENROUTER_MODEL_FALLBACK` | HTTP API, `arena`, `bench` | none; optional. Empty, blank, or the same as `OPENROUTER_MODEL` means no fallback |
 | `OPSPILOT_DB` | every entry point | `./data/opspilot.db` (`data/` is gitignored) |
 | `PORT` | HTTP API | `3000` |
 | `HOST` | HTTP API | `127.0.0.1` |
@@ -212,6 +213,7 @@ curl -s localhost:3000/chat -H 'content-type: application/json' \
 | 422 | `unknown_strategy` | Unknown `strategy`; `knownStrategies` lists the valid names |
 | 500 | `internal` | An unexpected error, including a memory recall that failed (the server logs `Memory recall failed: …`) |
 | 502 | `run_failed` | The run returned an error or threw. The message is fixed; the real error is in the server log |
+| 503 | `model_unavailable` | No model could answer: the primary failed after its retries and so did the fallback (or none is set). `runError.name` is the primary's error class. Try again later |
 | 504 | `timeout` | The run did not finish in 180 s and was cancelled |
 
 Every reply names its conversation in `conversationId`, and `metrics.historyMessages` says how many
@@ -225,6 +227,22 @@ curl -s localhost:3000/chat -H 'content-type: application/json' \
 Only a run that finishes with an answer is saved, so a failed or timed-out request leaves the
 history as it was and can be retried. Conversations live in the file at `OPSPILOT_DB` and survive a
 restart. The 502 and 504 replies also carry `conversationId`.
+
+### Model fallback
+
+Every model call goes through one factory. A call to `OPENROUTER_MODEL` that fails is retried once,
+then, when `OPENROUTER_MODEL_FALLBACK` is set, the same call goes to that model, which is also tried
+twice. Rate limits without a daily quota, server errors, and timeouts are retried; other client
+errors are not, and a cancelled request starts nothing new. The switch lasts one call: the next
+call tries the primary again.
+
+- Each switch adds a `fallback` event to the trace (`from`, `to`, and `error`, the class name of the
+  primary's error; never provider text). It sits under the `node` that made the call, before the
+  events of the fallback's answer.
+- `metrics.modelUsed` is the model of the last call that got an answer, and `metrics.llmCalls`
+  counts every request sent, retries and the fallback included.
+- When no model can answer, the reply is `503 model_unavailable` with the partial trace and metrics,
+  instead of a `502`.
 
 ### Semantic memory
 
@@ -393,7 +411,7 @@ validation steps are in [specs/006-mcp-server/quickstart.md](specs/006-mcp-serve
 | `src/index.ts` | HTTP entry point: opens the store, builds the model and tools, starts Express |
 | `src/http/` | Express app, `POST /chat` controller, service, schemas and reply mapper |
 | `src/mcp/` | MCP entry point (`server.ts`), server factory (`create-server.ts`) and stdout guard |
-| `src/agents/` | Strategies (`react`, `plan-and-execute`), reflection, model, LangChain tools and the strategy registry |
+| `src/agents/` | Strategies (`react`, `plan-and-execute`), reflection, model factory with retry and fallback (`model.ts`, `resilient-model.ts`), LangChain tools and the strategy registry |
 | `src/tools/` | Shared tool definitions used by both the agent and the MCP server |
 | `src/providers/` | Client for the public GitHub and Cloudflare status pages |
 | `src/store/` | `OpsStore` interface, SQLite and in-memory stores, seed data and the `seed` script |

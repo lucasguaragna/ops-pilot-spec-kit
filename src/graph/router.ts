@@ -1,6 +1,6 @@
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
-import { LlmCallCounter } from "../agents/llm-counter.ts";
+import { LlmCallCounter, type Switch } from "../agents/llm-counter.ts";
 import type { RouteDecision } from "../domain/types.ts";
 import { decideRoute, ROUTER_PROMPT, routeAnswerSchema } from "./routing.ts";
 
@@ -11,6 +11,10 @@ export interface RouterResult {
   /** Model calls the router made (1, or 0 if it failed before calling). */
   llmCalls: number;
   promptTokens: number | null;
+  /** The router's calls that went from the primary model to the fallback. */
+  switches: Switch[];
+  /** The model that answered the router's call; null when none did. */
+  modelUsed: string | null;
 }
 
 export interface Router {
@@ -50,4 +54,6 @@ const result = (decision: RouteDecision, counter: LlmCallCounter): RouterResult 
   decision,
   llmCalls: counter.count,
   promptTokens: counter.promptTokens,
+  switches: counter.switches,
+  modelUsed: counter.modelUsed,
 });
