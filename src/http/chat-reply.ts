@@ -1,17 +1,17 @@
+import type { SummarizationStep } from "../agents/history-summarizer.ts";
 import type { LearningOutcome } from "../agents/learning-reflector.ts";
 import { toRunError } from "../agents/run-outcome.ts";
 import type { ContextBreakdown } from "../context/breakdown.ts";
-import { addPromptTokens } from "../context/tokens.ts";
 import type { ConversationNotFoundError, UnknownStrategyError } from "../domain/errors.ts";
 import type { NewMessage } from "../domain/schemas.ts";
-import type { Metrics, RunError, RunResult, TraceEvent } from "../domain/types.ts";
+import type { Metrics, NodeTraceEvent, RunError, RunResult } from "../domain/types.ts";
 // Type-only, so the import cycle with chat-service.ts disappears at run time.
 import type { TimedRun } from "./chat-service.ts";
 import type { ChatReply, ErrorReply } from "./schemas.ts";
 
 /** What happened to the run itself. */
 export type RunOutcome =
-  | { kind: "result"; result: RunResult }
+  | { kind: "result"; result: RunResult<NodeTraceEvent> }
   | { kind: "thrown"; error: unknown }
   | { kind: "timeout"; timeoutMs: number };
 
@@ -31,6 +31,8 @@ export type ChatOutcome = RunOutcome & {
   context: ContextBreakdown;
 };
 
+export type { SummarizationStep };
+
 /** The context counts every reply with metrics reports. */
 const contextMetrics = (outcome: ChatOutcome) => ({
   historyMessages: outcome.conversation.historyMessages,
@@ -38,53 +40,6 @@ const contextMetrics = (outcome: ChatOutcome) => ({
   contextBreakdown: outcome.context,
 });
 
-/**
- * What the summarization step did in one request. A failure is a value, not a throw: it never fails
- * the request. `llmCalls` and `promptTokens` are what the step spent, stored or not, because the
- * calls were paid for either way.
- */
-export type SummarizationStep =
-  | {
-      kind: "stored";
-      summary: string;
-      /** `renderSummary(summary)`: exactly what the agent reads. */
-      rendered: string;
-      /** How many messages this summarization added to the coverage. */
-      absorbed: number;
-      droppedSecrets: number;
-      llmCalls: number;
-      promptTokens: number | null;
-    }
-  | {
-      kind: "failed";
-      reason: "thrown" | "timeout" | "empty" | "conflict";
-      /** The error of a `thrown` step; unset for the other reasons. */
-      error?: unknown;
-      llmCalls: number;
-      promptTokens: number | null;
-    }
-  | { kind: "not_due" };
-
-/**
- * Pure: puts the summarization step into the run's outcome. Its calls and tokens join the metrics,
- * stored or failed. A stored step also puts a `summarize` event first in the trace, so the engineer
- * sees which request refreshed the summary. A run that threw or timed out has no trace or metrics
- * in its reply, so it passes through unchanged.
- */
-export function withSummarization(outcome: RunOutcome, step: SummarizationStep): RunOutcome {
-  if (step.kind === "not_due" || outcome.kind !== "result") return outcome;
-  const { result } = outcome;
-  const metrics = {
-    ...result.metrics,
-    llmCalls: result.metrics.llmCalls + step.llmCalls,
-    promptTokens: addPromptTokens(result.metrics.promptTokens, step.promptTokens),
-  };
-  const trace: TraceEvent[] =
-    step.kind === "stored"
-      ? [{ type: "summarize", content: step.rendered, absorbed: step.absorbed }, ...result.trace]
-      : result.trace;
-  return { kind: "result", result: { ...result, trace, metrics } };
-}
 
 export interface HttpReply {
   status: number;
@@ -98,7 +53,7 @@ const RUN_ERROR_MESSAGE = "The run failed; details are in the server log";
 function runFailed(
   runError: RunError,
   outcome: ChatOutcome,
-  partial?: { trace: TraceEvent[]; metrics: Metrics },
+  partial?: { trace: NodeTraceEvent[]; metrics: Metrics },
 ): HttpReply {
   return {
     status: 502,

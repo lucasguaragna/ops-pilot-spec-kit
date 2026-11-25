@@ -5,7 +5,7 @@ import { UnknownStrategyError } from "../domain/errors.ts";
 import type { ReasoningStrategy, RunResult } from "../domain/types.ts";
 import { ScriptedChatModel, toolCallTurn } from "../testing/scripted-chat-model.ts";
 import { VERDICT_TOOL_NAME } from "./reflection.ts";
-import { createStrategy, strategyFactories, type StrategyRegistry } from "./index.ts";
+import { createRouteStrategy, createStrategy, strategyFactories, type StrategyRegistry } from "./index.ts";
 
 const stub = (name: string): ReasoningStrategy => ({
   name,
@@ -68,5 +68,17 @@ describe("createStrategy with reflection", () => {
   it("returns the plain strategy when reflect is false", () => {
     const strategy = createStrategy({ react: () => base }, "react", dependencies, { reflect: false });
     assert.equal(strategy.name, "react");
+  });
+});
+
+describe("createRouteStrategy", () => {
+  it("builds react and plan-execute from the registry", () => {
+    assert.equal(createRouteStrategy(registry, "react", dependencies).name, "react");
+    assert.equal(createRouteStrategy(registry, "plan-execute", dependencies).name, "plan-execute");
+  });
+
+  it("builds reflect as react wrapped with reflection", () => {
+    const model = new ScriptedChatModel([]) as unknown as BaseChatModel;
+    assert.equal(createRouteStrategy(registry, "reflect", { model, tools: [] }).name, "reflect:react");
   });
 });

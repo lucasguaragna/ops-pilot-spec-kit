@@ -1,6 +1,7 @@
 import type { AddressInfo } from "node:net";
 import type { StrategyRegistry } from "../agents/index.ts";
-import type { ReasoningStrategy, RunOptions, RunResult } from "../domain/types.ts";
+import type { ReasoningStrategy, RouteDecision, RunOptions, RunResult } from "../domain/types.ts";
+import type { Router } from "../graph/router.ts";
 import { createApp, type AppSettings } from "../http/server.ts";
 import { FakeConversationStore } from "./fake-conversation-store.ts";
 import { FakeEmbedder } from "./fake-embedder.ts";
@@ -45,6 +46,26 @@ export function fakeStrategy(name: string, result: RunResult | (() => Promise<Ru
   };
 }
 
+export interface FakeRouter extends Router {
+  /** The input of each call, so a test can tell whether the router ran. */
+  calls: string[];
+}
+
+/** A router that always decides the same route and spends `llmCalls` calls (0 keeps metrics unchanged). */
+export function fakeRouter(
+  decision: RouteDecision = { route: "react", reason: "Test router", source: "router" },
+  llmCalls = 0,
+): FakeRouter {
+  const calls: string[] = [];
+  return {
+    calls,
+    async route(input) {
+      calls.push(input);
+      return { decision, llmCalls, promptTokens: null };
+    },
+  };
+}
+
 export const completed = (answer: string): RunResult => ({
   stopReason: "completed",
   answer,
@@ -66,6 +87,7 @@ export function settingsFor(
   );
   return {
     registry,
+    createRouter: () => fakeRouter(),
     // The fake strategies never call the model; only the learning step does, and it learns nothing.
     createDependencies: () => ({ model: new ScriptedChatModel([NO_LEARNING]), tools: [] }),
     conversations: new FakeConversationStore(),

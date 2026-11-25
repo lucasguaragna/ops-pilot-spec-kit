@@ -1,6 +1,8 @@
 import express, { type ErrorRequestHandler } from "express";
 import type { StrategyDependencies } from "../agents/react.ts";
 import type { StrategyRegistry } from "../agents/index.ts";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { createRouter, type Router } from "../graph/router.ts";
 import type { MemoryStore } from "../memory/memory-store.ts";
 import type { ConversationStore } from "../store/conversation-store.ts";
 import { BackgroundTasks } from "./background-tasks.ts";
@@ -10,7 +12,7 @@ export const DEFAULT_TIMEOUT_MS = 180_000;
 export const DEFAULT_MAX_ITERATIONS = 10;
 /** The learning step gives up after this long (spec assumption: 30 s). */
 export const LEARNING_TIMEOUT_MS = 30_000;
-/** One history summarization gives up after this long. It is outside the run's timeout, so a slow summary never eats the agent's time. */
+/** One history summarization gives up after this long. It also counts toward the request timeout, so a slow summary leaves the agent less time. */
 export const SUMMARY_TIMEOUT_MS = 30_000;
 
 export interface AppSettings {
@@ -21,6 +23,8 @@ export interface AppSettings {
   conversations: ConversationStore;
   /** Required, so production can never fall back to a test double. */
   memories: MemoryStore;
+  /** Builds the router from the request's model. A test seam: tests plug in a fake router. */
+  createRouter?: (model: BaseChatModel) => Router;
   timeoutMs?: number;
   maxIterations?: number;
   /** Holds the learning steps still running after their reply; tests await `settled()`. */
@@ -36,6 +40,7 @@ export type ResolvedSettings = Required<AppSettings>;
 
 export function resolveSettings(settings: AppSettings): ResolvedSettings {
   return {
+    createRouter: (model) => createRouter({ model }),
     timeoutMs: DEFAULT_TIMEOUT_MS,
     maxIterations: DEFAULT_MAX_ITERATIONS,
     background: new BackgroundTasks(),

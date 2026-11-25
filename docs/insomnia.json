@@ -46,28 +46,43 @@
       "_id": "req_list_alerts",
       "_type": "request",
       "parentId": "fld_opspilot_success",
-      "name": "List firing alerts (react)",
-      "description": "Read-only question with the default strategy and no critic. Expect 200, stopReason completed, and a trace with list_alerts.",
+      "name": "List firing alerts (forced react)",
+      "description": "Read-only question with the strategy forced. Expect 200, stopReason completed, a route event with source override and no router call, and a trace with list_alerts.",
       "method": "POST",
       "url": "{{ _.base_url }}/chat",
       "body": {
         "mimeType": "application/json",
-        "text": "{\n  \"message\": \"Which alerts are firing?\",\n  \"reflect\": false\n}"
+        "text": "{\n  \"message\": \"Which alerts are firing?\",\n  \"strategy\": \"react\"\n}"
       },
       "headers": [{ "name": "Content-Type", "value": "application/json" }],
       "metaSortKey": 1
     },
     {
-      "_id": "req_open_incident_reflect",
+      "_id": "req_router_decides",
       "_type": "request",
       "parentId": "fld_opspilot_success",
-      "name": "Open sev2 incident (react + reflection)",
-      "description": "WRITES DATA: the agent opens a real incident in data/db.json. Run `npm run seed` to reset. With reflect true the critic checks the answer, so the trace can contain critique events and the call takes longer.",
+      "name": "Router decides (message only)",
+      "description": "No strategy: the router chooses. Expect 200 and exactly one route event with source router (or fallback if the router failed), then the chosen strategy's events. Every trace event has a node. WRITES DATA when the router picks plan-execute: run `npm run seed` to reset.",
       "method": "POST",
       "url": "{{ _.base_url }}/chat",
       "body": {
         "mimeType": "application/json",
-        "text": "{\n  \"message\": \"Open a sev2 incident for the catalog service\",\n  \"strategy\": \"react\",\n  \"reflect\": true\n}"
+        "text": "{\n  \"message\": \"Open an incident for each critical firing alert, then tell me how many alerts are left\"\n}"
+      },
+      "headers": [{ "name": "Content-Type", "value": "application/json" }],
+      "metaSortKey": 0
+    },
+    {
+      "_id": "req_open_incident_reflect",
+      "_type": "request",
+      "parentId": "fld_opspilot_success",
+      "name": "Open sev2 incident (reflect)",
+      "description": "WRITES DATA: the agent opens a real incident in data/db.json. Run `npm run seed` to reset. reflect: true is an alias for strategy \"reflect\" (react plus the critic), so the trace has a route event with source override and critique events, and the call takes longer.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/chat",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"message\": \"Open a sev2 incident for the catalog service\",\n  \"reflect\": true\n}"
       },
       "headers": [{ "name": "Content-Type", "value": "application/json" }],
       "metaSortKey": 2
@@ -76,13 +91,13 @@
       "_id": "req_multi_step_plan",
       "_type": "request",
       "parentId": "fld_opspilot_success",
-      "name": "Multi-step task (plan-execute + reflection)",
-      "description": "WRITES DATA: opens an incident for the oldest firing alert, then counts what is left. The trace starts with a plan event.",
+      "name": "Multi-step task (forced plan-execute)",
+      "description": "WRITES DATA: opens an incident for the oldest firing alert, then counts what is left. The trace has a route event with source override, then a plan event. Plan-execute with critique is no longer reachable through /chat.",
       "method": "POST",
       "url": "{{ _.base_url }}/chat",
       "body": {
         "mimeType": "application/json",
-        "text": "{\n  \"message\": \"Open an incident for the oldest firing alert and tell me how many alerts are still firing\",\n  \"strategy\": \"plan-execute\",\n  \"reflect\": true\n}"
+        "text": "{\n  \"message\": \"Open an incident for the oldest firing alert and tell me how many alerts are still firing\",\n  \"strategy\": \"plan-execute\"\n}"
       },
       "headers": [{ "name": "Content-Type", "value": "application/json" }],
       "metaSortKey": 3
@@ -91,13 +106,13 @@
       "_id": "req_bad_missing_reflect",
       "_type": "request",
       "parentId": "fld_opspilot_errors",
-      "name": "400 - missing reflect",
-      "description": "reflect is required. Expect 400 invalid_body with an issue on the path [\"reflect\"].",
+      "name": "400 - reflect with another strategy",
+      "description": "reflect: true only combines with strategy reflect. Expect 400 invalid_body with an issue on the path [\"reflect\"].",
       "method": "POST",
       "url": "{{ _.base_url }}/chat",
       "body": {
         "mimeType": "application/json",
-        "text": "{\n  \"message\": \"hi\"\n}"
+        "text": "{\n  \"message\": \"hi\",\n  \"strategy\": \"react\",\n  \"reflect\": true\n}"
       },
       "headers": [{ "name": "Content-Type", "value": "application/json" }],
       "metaSortKey": 1

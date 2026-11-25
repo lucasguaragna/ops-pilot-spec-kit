@@ -68,7 +68,7 @@ info:
     ```sh
     npm run dev
     curl -s localhost:3000/chat -H 'content-type: application/json' \
-      -d '{"message":"Which alerts are firing?","reflect":false}'
+      -d '{"message":"Which alerts are firing?"}'
     ```
 
     The `content-type: application/json` header is required. Without it the body is not read and the
@@ -96,10 +96,13 @@ paths:
         **What happens on a call**
 
         1. The body is validated (`400` if invalid, including a `conversationId` that is not a UUID).
-        2. The `strategy` name is looked up (`422` if unknown).
+        2. A `strategy` name, if sent, is looked up (`422` if unknown). Without one, the router chooses
+           the strategy later, inside the run.
         3. If there is a `conversationId`, its last 12 messages are loaded (`404` if it does not
            exist); otherwise a new conversation is created.
-        4. If `reflect` is `true`, the strategy is wrapped with the critic.
+        4. The run goes through the production graph: `context`, `router` (skipped when `strategy` or
+           `reflect: true` forces a route), the chosen strategy (`react`, `plan-execute` or
+           `reflect`), and `response`.
         5. The agent runs for at most 180 seconds, with the history ahead of the message. If it is
            still running, it is cancelled and the reply is `504`; no model or tool call starts after
            that.
@@ -121,28 +124,24 @@ paths:
               $ref: '#/components/schemas/ChatRequest'
             examples:
               listAlerts:
-                summary: A read-only question with the default strategy
+                summary: A read-only question; the router chooses the strategy
                 value:
                   message: Which alerts are firing?
-                  reflect: false
               openIncidentWithReflection:
-                summary: A write request, checked by the critic
+                summary: A write request, checked by the critic (the reflect route)
                 value:
                   message: Open a sev2 incident for the catalog service
-                  strategy: react
                   reflect: true
               followUp:
                 summary: A follow-up in a conversation that already has an exchange
                 value:
                   message: Open an incident for the worst one
-                  reflect: false
                   conversationId: 3f0c1f6e-8d1e-4c43-9c8e-5f0a3b2d9a10
               multiStep:
                 summary: Several ordered steps with the planner
                 value:
                   message: Open an incident for the oldest firing alert and tell me how many alerts are still firing
                   strategy: plan-execute
-                  reflect: true
       responses:
         '200':
           description: |
@@ -234,7 +233,7 @@ paths:
                 $ref: '#/components/schemas/InvalidBodyError'
               examples:
                 missingFields:
-                  summary: Blank message and missing reflect
+                  summary: Blank message and reflect with another strategy
                   value:
                     error: invalid_body
                     message: The request body is invalid
@@ -242,7 +241,7 @@ paths:
                       - path: [message]
                         message: 'Too small: expected string to have >=1 characters'
                       - path: [reflect]
-                        message: 'Invalid input: expected boolean, received undefined'
+                        message: 'reflect: true only combines with strategy "reflect"'
                 notJson:
                   summary: Body is not JSON
                   value:
@@ -273,7 +272,7 @@ paths:
                 $ref: '#/components/schemas/UnknownStrategyError'
               example:
                 error: unknown_strategy
-                message: 'Unknown strategy "chain-of-thought". Known: react, plan-execute'
+                message: 'Unknown strategy "chain-of-thought". Known: react, plan-execute, reflect'
                 strategy: chain-of-thought
                 knownStrategies: [react, plan-execute]
         '500':
@@ -347,7 +346,7 @@ components:
   schemas:
     ChatRequest:
       type: object
-      required: [message, reflect]
+      required: [message]
       additionalProperties: true
       description: What to ask and how to process it. Unknown fields are ignored.
       properties:
@@ -361,16 +360,18 @@ components:
             - Which alerts are firing?
         strategy:
           type: string
-          default: react
           description: |
-            Reasoning strategy. Any string is accepted by the body check, but only the names in the
-            enum are known; other names get `422`.
-          enum: [react, plan-execute]
+            Optional. Forces a route (an override) and skips the router. Any string is accepted by the
+            body check, but only the names in the enum are known; other names get `422`. Without it,
+            the router chooses the strategy.
+          enum: [react, plan-execute, reflect]
         reflect:
           type: boolean
+          default: false
           description: |
-            Required, with no default, so the caller always chooses. `true` adds the critic, which
-            improves answer accuracy at the cost of more model calls and more time.
+            Optional. `true` is the same as `strategy: reflect` (ReAct plus the critic, which improves
+            answer accuracy at the cost of more model calls and more time). Together with any other
+            `strategy` it is a `400`.
         conversationId:
           type: string
           format: uuid
@@ -410,9 +411,14 @@ components:
         - `action`: the agent calls a tool with `args`.
         - `observation`: what the tool returned (a JSON string, or `Error: ...` text).
         - `plan`: the list of steps (`plan-execute` only).
-        - `critique`: the critic's verdict (only with `reflect: true`).
+        - `route`: which strategy runs, why, and who decided (`source`: `router`, `override` or
+          `fallback`). Exactly one per reply, from the `router` node.
+        - `critique`: the critic's verdict (only on the `reflect` route).
         - `answer`: a candidate or final answer. With reflection there can be several; the last one
-          is the reply's `answer`.
+          is the reply's `answer`, and it comes from the `response` node.
+
+        Every event also has `node`, the graph step that produced it: `context`, `router`, `react`,
+        `plan-execute`, `reflect` or `response`.
       oneOf:
         - $ref: '#/components/schemas/ThoughtEvent'
         - $ref: '#/components/schemas/ActionEvent'
@@ -420,6 +426,7 @@ components:
         - $ref: '#/components/schemas/PlanEvent'
         - $ref: '#/components/schemas/CritiqueEvent'
         - $ref: '#/components/schemas/AnswerEvent'
+        - $ref: '#/components/schemas/RouteEvent'
       discriminator:
         propertyName: type
         mapping:
@@ -429,6 +436,7 @@ components:
           plan: '#/components/schemas/PlanEvent'
           critique: '#/components/schemas/CritiqueEvent'
           answer: '#/components/schemas/AnswerEvent'
+          route: '#/components/schemas/RouteEvent'
 
     ThoughtEvent:
       type: object
@@ -487,6 +495,19 @@ components:
             tool results; `rerun` makes the agent act again with the tools, using the critique as
             feedback (this can call write tools a second time).
         content: { type: string, description: "The critic's explanation. Empty when approved." }
+
+    RouteEvent:
+      type: object
+      required: [node, type, route, source, reason]
+      properties:
+        node: { type: string, const: router }
+        type: { type: string, const: route }
+        route: { type: string, enum: [react, plan-execute, reflect], description: "The strategy that ran." }
+        source:
+          type: string
+          enum: [router, override, fallback]
+          description: "Who decided: the router, the caller (`strategy` or `reflect: true`), or the fallback to `react` after a router failure."
+        reason: { type: string, description: "The router's reason, `Requested by the caller` for an override, or `Router failed: ...` for a fallback." }
 
     AnswerEvent:
       type: object

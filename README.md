@@ -80,6 +80,7 @@ Each feature has a folder in `specs/` with its spec, plan, tasks and contracts.
 | Learning reflector | After each completed reply with a `userId`, a background step learns at most one lasting fact from the message, never a one-off request or a secret; `forget_preference` forgets a fact by description | `009-learning-reflector` |
 | Context measurement | `metrics.promptTokens` is the real input token count the provider reported, and `metrics.contextBreakdown` estimates the starting context per source. `scripts/long-conversation.sh` prints both turn by turn | `010-context-measurement` |
 | History summarization | Messages that leave the 8-message window are merged into one short telegraphic summary stored in `conversation_summaries`. It is refreshed only on batch boundaries, never on every request, and a `summarize` trace event marks the request that refreshed it | `011-history-summarization` |
+| Unified graph | Every `POST /chat` request runs through one graph: `context`, `router`, one of `react` / `plan-execute` / `reflect`, then `response`. The router picks the strategy with one structured-output call (`route`, `reason`) and falls back to `react` if it fails; a `strategy` in the body skips it. Each trace event carries the `node` that produced it, and a `route` event says which strategy ran and who decided | `012-unified-graph` |
 
 ### Tools
 
@@ -193,8 +194,8 @@ Send `POST /chat` a JSON body, with the `content-type: application/json` header:
 | Field | Type | Notes |
 | --- | --- | --- |
 | `message` | string | Required, not blank |
-| `reflect` | boolean | Required; `true` adds the critic |
-| `strategy` | string | Optional; `react` (default) or `plan-execute` |
+| `strategy` | string | Optional; `react`, `plan-execute` or `reflect` forces that route. Without it the router chooses |
+| `reflect` | boolean | Optional, default `false`; `true` is the same as `strategy: "reflect"`, and with another strategy it is a `400` |
 | `conversationId` | string (UUID) | Optional; continues that conversation. Without it a new one starts |
 | `userId` | string | Optional, 1 to 128 characters; recalls and saves that user's facts. Without it the run has no memory |
 

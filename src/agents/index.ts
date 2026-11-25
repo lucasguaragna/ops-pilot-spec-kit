@@ -1,5 +1,5 @@
 import { UnknownStrategyError } from "../domain/errors.ts";
-import type { ReasoningStrategy } from "../domain/types.ts";
+import type { ReasoningStrategy, Route } from "../domain/types.ts";
 import { withReflection } from "./reflection.ts";
 import { createPlanExecuteStrategy } from "./plan-and-execute.ts";
 import { createReactStrategy, type StrategyDependencies } from "./react.ts";
@@ -25,4 +25,18 @@ export function createStrategy(
   const factory = registry[name] as StrategyFactory;
   const base = factory(dependencies);
   return reflect ? withReflection(base, { model: dependencies.model }) : base;
+}
+
+/**
+ * The strategy of a route: `react` and `plan-execute` come from the registry, and `reflect` is ReAct
+ * wrapped with reflection. Reflection is not in the registry, so the arena never lists `reflect:reflect`.
+ */
+export function createRouteStrategy(
+  registry: StrategyRegistry,
+  route: Route,
+  dependencies: StrategyDependencies,
+): ReasoningStrategy {
+  return route === "reflect"
+    ? createStrategy(registry, "react", dependencies, { reflect: true })
+    : createStrategy(registry, route, dependencies, { reflect: false });
 }

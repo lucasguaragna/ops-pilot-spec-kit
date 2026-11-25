@@ -1,33 +1,49 @@
 import { z } from "zod";
 import { UserId } from "../domain/schemas.ts";
+import { NODE_NAMES, ROUTES } from "../graph/routing.ts";
 
 export const ChatRequest = z.object({
   message: z.string().trim().min(1),
-  // Any string passes here; the registry decides whether the name exists (422, not 400).
-  strategy: z.string().default("react"),
-  reflect: z.boolean(),
+  // Any string passes here; the routes decide whether the name exists (422, not 400). Absent: the router decides.
+  strategy: z.string().optional(),
+  /** Alias of `strategy: "reflect"`; with any other strategy the body is a 400. */
+  reflect: z.boolean().optional().default(false),
   /** Continues an existing conversation; without it a new one starts. A malformed id is a 400. */
   conversationId: z.uuid().optional(),
   /** Whose memories to recall and save; without it the run has no memory. */
   userId: UserId.optional(),
+}).superRefine((request, context) => {
+  if (request.reflect && request.strategy !== undefined && request.strategy !== "reflect") {
+    context.addIssue({ code: "custom", path: ["reflect"], message: 'reflect: true only combines with strategy "reflect"' });
+  }
 });
 export type ChatRequest = z.infer<typeof ChatRequest>;
 
 const Count = z.number().int().nonnegative();
 
+const Node = z.enum(NODE_NAMES);
+
 export const TraceEventSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("thought"), content: z.string() }),
-  z.object({ type: z.literal("action"), tool: z.string(), args: z.record(z.string(), z.unknown()) }),
-  z.object({ type: z.literal("observation"), tool: z.string(), content: z.string() }),
-  z.object({ type: z.literal("plan"), steps: z.array(z.string()) }),
+  z.object({ node: Node, type: z.literal("thought"), content: z.string() }),
+  z.object({ node: Node, type: z.literal("action"), tool: z.string(), args: z.record(z.string(), z.unknown()) }),
+  z.object({ node: Node, type: z.literal("observation"), tool: z.string(), content: z.string() }),
+  z.object({ node: Node, type: z.literal("plan"), steps: z.array(z.string()) }),
   z.object({
+    node: Node,
     type: z.literal("critique"),
     approved: z.boolean(),
     fix: z.enum(["rerun", "rewrite"]).optional(),
     content: z.string(),
   }),
-  z.object({ type: z.literal("answer"), content: z.string() }),
-  z.object({ type: z.literal("summarize"), content: z.string(), absorbed: Count.min(1) }),
+  z.object({ node: Node, type: z.literal("answer"), content: z.string() }),
+  z.object({ node: Node, type: z.literal("summarize"), content: z.string(), absorbed: Count.min(1) }),
+  z.object({
+    node: Node,
+    type: z.literal("route"),
+    route: z.enum(ROUTES),
+    reason: z.string(),
+    source: z.enum(["router", "override", "fallback"]),
+  }),
 ]);
 
 /** Estimated tokens of the starting context per source; the total is their sum. */

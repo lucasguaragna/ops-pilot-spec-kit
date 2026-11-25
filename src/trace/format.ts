@@ -1,6 +1,15 @@
-import type { Metrics, RunResult, TraceEvent } from "../domain/types.ts";
+import type { Metrics, NodeName, RunResult, TraceEvent } from "../domain/types.ts";
 
-export function formatEvent(event: TraceEvent): string {
+/**
+ * One trace event as text. An event that came out of the production graph names its node first
+ * (`react | [thought] ...`); the arena and the bench run strategies directly, so theirs print as is.
+ */
+export function formatEvent(event: TraceEvent & { node?: NodeName }): string {
+  const text = formatBody(event);
+  return event.node === undefined ? text : `${event.node} | ${text}`;
+}
+
+function formatBody(event: TraceEvent): string {
   switch (event.type) {
     case "thought":
     case "answer":
@@ -13,6 +22,8 @@ export function formatEvent(event: TraceEvent): string {
       return `[action] ${event.tool} ${JSON.stringify(event.args)}`;
     case "observation":
       return `[observation] ${event.tool}: ${event.content}`;
+    case "route":
+      return `[route] ${event.route} (${event.source}): ${event.reason}`;
     case "summarize":
       return `[summarize] (${event.absorbed} messages): ${event.content.trimEnd()}`;
     case "plan":

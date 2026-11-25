@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { RunResult } from "../domain/types.ts";
+import type { NodeTraceEvent, RunResult as DomainRunResult } from "../domain/types.ts";
+
+type RunResult = DomainRunResult<NodeTraceEvent>;
 import { UnknownStrategyError } from "../domain/errors.ts";
 import { ConversationNotFoundError } from "../domain/errors.ts";
 import {
@@ -12,7 +14,6 @@ import {
   summaryLogLine,
   toHttpReply,
   unknownStrategyReply,
-  withSummarization,
   type ChatOutcome,
   type RunOutcome,
   type SummarizationStep,
@@ -21,7 +22,7 @@ import { ChatReply, ErrorReply } from "./schemas.ts";
 import type { LearningOutcome } from "../agents/learning-reflector.ts";
 
 const metrics = { llmCalls: 2, latencyMs: 10, promptTokens: null };
-const trace: RunResult["trace"] = [{ type: "answer", content: "done" }];
+const trace: RunResult["trace"] = [{ type: "answer", content: "done", node: "response" }];
 const conversation = { id: "conv-1", historyMessages: 4 };
 const context = { system: 100, tools: 200, history: 250, memories: 30, message: 10, total: 590 };
 const withHistory = { ...metrics, historyMessages: 4, recalledMemories: 2, contextBreakdown: context };
@@ -305,84 +306,6 @@ describe("learningLogLine", () => {
     for (const [, timed] of cases) {
       assert.doesNotMatch(learningLogLine("u1", timed, 30_000)?.line ?? "", /hunter2|password/);
     }
-  });
-});
-
-describe("withSummarization", () => {
-  const stored: SummarizationStep = {
-    kind: "stored",
-    summary: "- Page payments",
-    rendered: "RENDERED",
-    absorbed: 8,
-    droppedSecrets: 0,
-    llmCalls: 1,
-    promptTokens: 300,
-  };
-  const failed: SummarizationStep = { kind: "failed", reason: "thrown", error: new Error("x"), llmCalls: 2, promptTokens: null };
-  const completedRun: RunOutcome = {
-    kind: "result",
-    result: { stopReason: "completed", answer: "done", trace, metrics: { llmCalls: 3, latencyMs: 10, promptTokens: 1000 } },
-  };
-  const failedRun: RunOutcome = {
-    kind: "result",
-    result: {
-      stopReason: "error",
-      answer: null,
-      error: { name: "Error", message: "x" },
-      trace,
-      metrics: { llmCalls: 2, latencyMs: 10, promptTokens: null },
-    },
-  };
-
-  const metricsOf = (outcome: RunOutcome) => (outcome.kind === "result" ? outcome.result.metrics : undefined);
-  const traceOf = (outcome: RunOutcome) => (outcome.kind === "result" ? outcome.result.trace : undefined);
-
-  it("adds a stored step's calls and tokens to the metrics of a completed run", () => {
-    assert.deepEqual(metricsOf(withSummarization(completedRun, stored)), { llmCalls: 4, latencyMs: 10, promptTokens: 1300 });
-  });
-
-  it("adds a failed step's calls too, and its tokens only when it reported some", () => {
-    assert.deepEqual(metricsOf(withSummarization(completedRun, failed)), { llmCalls: 5, latencyMs: 10, promptTokens: 1000 });
-    assert.deepEqual(metricsOf(withSummarization(completedRun, { ...failed, promptTokens: 40 })), {
-      llmCalls: 5,
-      latencyMs: 10,
-      promptTokens: 1040,
-    });
-  });
-
-  it("counts the step in a run that failed with partial metrics", () => {
-    assert.deepEqual(metricsOf(withSummarization(failedRun, stored)), { llmCalls: 3, latencyMs: 10, promptTokens: 300 });
-  });
-
-  it("changes nothing for a step that was not due", () => {
-    assert.equal(withSummarization(completedRun, { kind: "not_due" }), completedRun);
-  });
-
-  it("leaves a thrown run and a timed-out run unchanged", () => {
-    const thrown: RunOutcome = { kind: "thrown", error: new Error("boom") };
-    const timeout: RunOutcome = { kind: "timeout", timeoutMs: 5 };
-    assert.equal(withSummarization(thrown, stored), thrown);
-    assert.equal(withSummarization(timeout, stored), timeout);
-  });
-
-  it("puts the summarize event first in the trace of a completed run, and of a run_failed one (FR-009)", () => {
-    const event = { type: "summarize", content: "RENDERED", absorbed: 8 };
-    assert.deepEqual(traceOf(withSummarization(completedRun, stored)), [event, ...trace]);
-    assert.deepEqual(traceOf(withSummarization(failedRun, stored)), [event, ...trace]);
-    const reply = toHttpReply(chat(withSummarization(failedRun, stored)));
-    assert.equal(reply.status, 502);
-    assert.ok(ErrorReply.safeParse(reply.body).success);
-    assert.deepEqual((reply.body as { trace: unknown[] }).trace[0], event);
-  });
-
-  it("adds no event for a failed or not-due step", () => {
-    assert.deepEqual(traceOf(withSummarization(completedRun, failed)), trace);
-    assert.deepEqual(traceOf(withSummarization(completedRun, { kind: "not_due" })), trace);
-  });
-
-  it("does not change the answer or the stop reason", () => {
-    const outcome = withSummarization(completedRun, stored);
-    assert.ok(outcome.kind === "result" && outcome.result.stopReason === "completed" && outcome.result.answer === "done");
   });
 });
 

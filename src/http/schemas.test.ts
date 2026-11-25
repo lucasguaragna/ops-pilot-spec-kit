@@ -5,17 +5,33 @@ import { ChatReply, ChatRequest, ErrorReply, MetricsSchema, toIssues } from "./s
 const breakdown = { system: 100, tools: 200, history: 250, memories: 0, message: 10, total: 560 };
 
 describe("ChatRequest", () => {
-  it("accepts a minimal body and defaults the strategy to react", () => {
-    assert.deepEqual(ChatRequest.parse({ message: "hi", reflect: false }), {
-      message: "hi",
-      strategy: "react",
-      reflect: false,
-    });
+  it("accepts a message alone: no strategy, and reflect defaults to false", () => {
+    assert.deepEqual(ChatRequest.parse({ message: "hi" }), { message: "hi", reflect: false });
   });
 
-  it("rejects a missing or non-boolean reflect", () => {
-    assert.equal(ChatRequest.safeParse({ message: "hi" }).success, false);
+  it("rejects a non-boolean reflect", () => {
     assert.equal(ChatRequest.safeParse({ message: "hi", reflect: "true" }).success, false);
+  });
+
+  it("accepts every valid strategy and reflect combination", () => {
+    for (const body of [
+      { strategy: "plan-execute" },
+      { reflect: true },
+      { strategy: "reflect", reflect: true },
+      { strategy: "react", reflect: false },
+    ]) {
+      assert.ok(ChatRequest.safeParse({ message: "hi", ...body }).success, JSON.stringify(body));
+    }
+  });
+
+  it("rejects reflect: true with another strategy, with one issue on reflect", () => {
+    for (const strategy of ["react", "plan-execute"]) {
+      const parsed = ChatRequest.safeParse({ message: "hi", strategy, reflect: true });
+      assert.ok(!parsed.success);
+      assert.deepEqual(toIssues(parsed.error), [
+        { path: ["reflect"], message: 'reflect: true only combines with strategy "reflect"' },
+      ]);
+    }
   });
 
   it("rejects an empty or blank message", () => {
@@ -25,7 +41,7 @@ describe("ChatRequest", () => {
 
   it("strips extra fields", () => {
     const parsed = ChatRequest.parse({ message: "hi", reflect: true, admin: true });
-    assert.deepEqual(Object.keys(parsed).sort(), ["message", "reflect", "strategy"]);
+    assert.deepEqual(Object.keys(parsed).sort(), ["message", "reflect"]);
   });
 
   it("keeps the strategy name as is, because the registry checks it later", () => {
@@ -38,7 +54,7 @@ describe("toIssues", () => {
     const parsed = ChatRequest.safeParse({ message: 42 });
     assert.ok(!parsed.success);
     const issues = toIssues(parsed.error);
-    assert.deepEqual(issues.map((issue) => issue.path), [["message"], ["reflect"]]);
+    assert.deepEqual(issues.map((issue) => issue.path), [["message"]]);
     for (const issue of issues) assert.equal(typeof issue.message, "string");
   });
 });
@@ -179,7 +195,7 @@ describe("reply schemas: summarize event", () => {
   const reply = (event: unknown) => ({ conversationId: "c1", answer: "ok", stopReason: "completed", trace: [event], metrics });
 
   it("accepts a summarize event in a chat reply", () => {
-    assert.ok(ChatReply.safeParse(reply({ type: "summarize", content: "x", absorbed: 8 })).success);
+    assert.ok(ChatReply.safeParse(reply({ node: "context", type: "summarize", content: "x", absorbed: 8 })).success);
   });
 
   it("rejects an absorbed count of 0 or a fraction, and a missing content", () => {
@@ -195,9 +211,35 @@ describe("reply schemas: summarize event", () => {
         message: "The run stopped with an error",
         runError: { name: "Error", message: "m" },
         conversationId: "c1",
-        trace: [{ type: "summarize", content: "x", absorbed: 8 }],
+        trace: [{ node: "context", type: "summarize", content: "x", absorbed: 8 }],
         metrics,
       }).success,
     );
+  });
+});
+
+describe("reply schemas: route event", () => {
+  const route = { node: "router", type: "route", route: "plan-execute", source: "router", reason: "Several steps" };
+  const reply = (event: unknown) => ({
+    conversationId: "c1",
+    answer: "ok",
+    stopReason: "completed",
+    trace: [event],
+    metrics: { llmCalls: 1, latencyMs: 1, historyMessages: 0, recalledMemories: 0, promptTokens: null, contextBreakdown: breakdown },
+  });
+
+  it("accepts a route event", () => {
+    assert.ok(ChatReply.safeParse(reply(route)).success);
+  });
+
+  it("rejects an event without a node or with an unknown node", () => {
+    const { node: _node, ...bare } = route;
+    assert.equal(ChatReply.safeParse(reply(bare)).success, false);
+    assert.equal(ChatReply.safeParse(reply({ ...route, node: "planner" })).success, false);
+  });
+
+  it("rejects an unknown route or source", () => {
+    assert.equal(ChatReply.safeParse(reply({ ...route, route: "nope" })).success, false);
+    assert.equal(ChatReply.safeParse(reply({ ...route, source: "guess" })).success, false);
   });
 });

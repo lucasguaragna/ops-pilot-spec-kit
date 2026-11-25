@@ -3,7 +3,28 @@ import { describe, it } from "node:test";
 import type { RunResult } from "../domain/types.ts";
 import { formatEvent, formatMetrics, formatResult } from "./format.ts";
 
+describe("formatEvent: node", () => {
+  it("prints the node first when the event has one", () => {
+    assert.equal(
+      formatEvent({ node: "plan-execute", type: "action", tool: "list_alerts", args: {} }),
+      "plan-execute | [action] list_alerts {}",
+    );
+    assert.equal(formatEvent({ node: "response", type: "answer", content: "done" }), "response | [answer] done");
+  });
+
+  it("prints an event without a node exactly as before (arena and bench)", () => {
+    assert.equal(formatEvent({ type: "answer", content: "done" }), "[answer] done");
+  });
+});
+
 describe("formatEvent", () => {
+  it("formats a route event with its source and reason", () => {
+    assert.equal(
+      formatEvent({ type: "route", route: "plan-execute", source: "router", reason: "Several steps" }),
+      "[route] plan-execute (router): Several steps",
+    );
+  });
+
   it("formats each event type", () => {
     assert.equal(formatEvent({ type: "thought", content: "Check alerts" }), "[thought] Check alerts");
     assert.equal(

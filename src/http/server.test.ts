@@ -13,6 +13,7 @@ import { ChatReply, ErrorReply } from "./schemas.ts";
 import {
   closeServers,
   completed,
+  fakeRouter,
   fakeStrategy,
   postChat,
   settingsFor,
@@ -31,10 +32,12 @@ describe("POST /chat: successful runs", () => {
     assert.equal(status, 200);
     assert.equal(json.answer, "Two alerts are firing.");
     assert.equal(json.stopReason, "completed");
-    assert.equal(json.trace.length, 3);
+    // The route event, then the strategy's three events.
+    assert.equal(json.trace.length, 4);
     assert.deepEqual(json.metrics, {
       llmCalls: 2,
-      latencyMs: 15,
+      // Measured around the whole graph, so it is not the strategy's own 15.
+      latencyMs: json.metrics.latencyMs,
       historyMessages: 0,
       recalledMemories: 0,
       promptTokens: null,
@@ -124,7 +127,10 @@ describe("POST /chat: successful runs", () => {
     assert.equal(status, 200);
     assert.equal(json.answer, null);
     assert.equal(json.stopReason, "iteration_limit");
-    assert.deepEqual(json.trace, [{ type: "thought", content: "still thinking" }]);
+    assert.deepEqual(json.trace, [
+      { node: "router", type: "route", route: "react", source: "router", reason: "Test router" },
+      { node: "react", type: "thought", content: "still thinking" },
+    ]);
   });
 
   it("gives the strategy maxIterations 10", async () => {
@@ -192,7 +198,7 @@ describe("POST /chat: invalid requests", () => {
   const bad: [string, unknown, string][] = [
     ["missing message", { reflect: false }, "message"],
     ["blank message", { message: "   ", reflect: false }, "message"],
-    ["missing reflect", { message: "hi" }, "reflect"],
+    ["reflect with another strategy", { message: "hi", strategy: "react", reflect: true }, "reflect"],
     ["string reflect", { message: "hi", reflect: "true" }, "reflect"],
     ["numeric message", { message: 42, reflect: false }, "message"],
   ];
@@ -252,7 +258,7 @@ describe("POST /chat: unknown strategy", () => {
       assert.equal(status, 422);
       assert.equal(json.error, "unknown_strategy");
       assert.equal(json.strategy, name);
-      assert.deepEqual(json.knownStrategies, ["react", "plan-execute"]);
+      assert.deepEqual(json.knownStrategies, ["react", "plan-execute", "reflect"]);
     });
   }
 });
@@ -273,7 +279,10 @@ describe("POST /chat: run failures", () => {
     assert.equal(status, 502);
     assert.equal(json.error, "run_failed");
     assert.deepEqual(json.runError, { name: "Error", message: "The run failed; details are in the server log" });
-    assert.deepEqual(json.trace, [{ type: "thought", content: "trying" }]);
+    assert.deepEqual(json.trace, [
+      { node: "router", type: "route", route: "react", source: "router", reason: "Test router" },
+      { node: "react", type: "thought", content: "trying" },
+    ]);
   });
 
   it("replies 502 without a trace or a stack when the run throws", async () => {
@@ -479,7 +488,7 @@ describe("POST /chat: memory", () => {
     const { contextBreakdown, ...counts } = json.metrics;
     assert.deepEqual(counts, {
       llmCalls: 2,
-      latencyMs: 15,
+      latencyMs: counts.latencyMs,
       historyMessages: 0,
       recalledMemories: 0,
       promptTokens: null,
@@ -618,5 +627,168 @@ describe("POST /chat: history summary", () => {
     assert.equal(next.status, 200);
     assert.ok((react.calls[1]?.input ?? "").startsWith("Summary of the earlier conversation"));
     assert.equal(model.calls, 1);
+  });
+});
+
+describe("POST /chat: the router decides", () => {
+  const strategies = () => ({
+    react: fakeStrategy("react", completed("from react")),
+    "plan-execute": fakeStrategy("plan-execute", completed("from plan")),
+  });
+  const decided = { route: "plan-execute", reason: "Several alerts", source: "router" } as const;
+
+  it("runs the strategy the router chose for a message alone, and counts the router's call", async () => {
+    const { react, ...rest } = strategies();
+    const router = fakeRouter(decided, 1);
+    const baseUrl = await startServer(settingsFor({ react, ...rest }, { createRouter: () => router }));
+
+    const { status, json } = await postChat(baseUrl, { message: "Open an incident for each alert" });
+
+    assert.equal(status, 200);
+    assert.equal(json.answer, "from plan");
+    assert.equal(react.calls.length, 0);
+    assert.equal(router.calls.length, 1);
+    assert.deepEqual(json.trace[0], { node: "router", type: "route", ...decided });
+    assert.equal(json.metrics.llmCalls, 1 + 2);
+    assert.ok(ChatReply.safeParse(json).success);
+  });
+
+  it("gives every trace event a node, in graph order, with the final answer on response", async () => {
+    const { json } = await postChat(
+      await startServer(settingsFor(strategies(), { createRouter: () => fakeRouter(decided) })),
+      { message: "hi" },
+    );
+
+    assert.deepEqual(
+      json.trace.map((event: { node: string }) => event.node),
+      ["router", "plan-execute", "plan-execute", "response"],
+    );
+    assert.equal(json.trace.filter((event: { type: string }) => event.type === "route").length, 1);
+  });
+
+  it("falls back to react, visibly, when the router fails", async () => {
+    const fallback = { route: "react", reason: "Router failed: invalid answer", source: "fallback" } as const;
+    const { status, json } = await postChat(
+      await startServer(settingsFor(strategies(), { createRouter: () => fakeRouter(fallback) })),
+      { message: "hi" },
+    );
+
+    assert.equal(status, 200);
+    assert.equal(json.answer, "from react");
+    assert.deepEqual(json.trace[0], { node: "router", type: "route", ...fallback });
+  });
+
+  it("puts node on every event of a 502 that carries a trace", async () => {
+    const failing = fakeStrategy("react", {
+      stopReason: "error",
+      answer: null,
+      error: { name: "Error", message: "x" },
+      trace: [{ type: "thought", content: "trying" }],
+      metrics: { llmCalls: 1, latencyMs: 1, promptTokens: null },
+    });
+    const { status, json } = await postChat(await startServer(settingsFor({ react: failing })), { message: "hi" });
+
+    assert.equal(status, 502);
+    assert.deepEqual(
+      json.trace.map((event: { node: string }) => event.node),
+      ["router", "react"],
+    );
+  });
+
+  it("puts the summarize event first, on the context node", async () => {
+    const store = new FakeConversationStore();
+    const id = store.create().id;
+    for (let index = 0; index < 16; index++) {
+      store.append(id, { role: index % 2 === 0 ? "user" : "assistant", content: `message ${index}` });
+    }
+    const model = new ScriptedChatModel([textTurn("- Decision: page payments"), NO_LEARNING]);
+    const baseUrl = await startServer(
+      settingsFor(strategies(), { conversations: store, createDependencies: () => ({ model, tools: [] }) }),
+    );
+
+    const { json } = await postChat(baseUrl, { message: "hi", conversationId: id });
+
+    assert.deepEqual(
+      json.trace.slice(0, 2).map((event: { node: string; type: string }) => `${event.node}/${event.type}`),
+      ["context/summarize", "router/route"],
+    );
+  });
+});
+
+describe("POST /chat: a forced route", () => {
+  const setup = () => {
+    const react = fakeStrategy("react", completed("from react"));
+    const planExecute = fakeStrategy("plan-execute", completed("from plan"));
+    const router = fakeRouter();
+    return { react, planExecute, router, settings: settingsFor({ react, "plan-execute": planExecute }, { createRouter: () => router }) };
+  };
+
+  it("runs the requested strategy as an override, with no router call and no extra model call", async () => {
+    const { planExecute, router, settings } = setup();
+    const { status, json } = await postChat(await startServer(settings), { message: "hi", strategy: "plan-execute" });
+
+    assert.equal(status, 200);
+    assert.equal(planExecute.calls.length, 1);
+    assert.equal(router.calls.length, 0);
+    assert.deepEqual(json.trace[0], {
+      node: "router",
+      type: "route",
+      route: "plan-execute",
+      source: "override",
+      reason: "Requested by the caller",
+    });
+    assert.equal(json.metrics.llmCalls, 2);
+  });
+
+  it("treats reflect: true as the reflect route", async () => {
+    const { react, router, settings } = setup();
+    const withCritic = {
+      ...settings,
+      createDependencies: () => ({
+        model: new ScriptedChatModel([toolCallTurn(VERDICT_TOOL_NAME, { approved: true, feedback: "backed" })]),
+        tools: [],
+      }),
+    };
+    const { status, json } = await postChat(await startServer(withCritic), { message: "hi", reflect: true });
+
+    assert.equal(status, 200);
+    assert.equal(react.calls.length, 1);
+    assert.equal(router.calls.length, 0);
+    assert.deepEqual(
+      [json.trace[0].route, json.trace[0].source],
+      ["reflect", "override"],
+    );
+    assert.ok(json.trace.some((event: { type: string }) => event.type === "critique"));
+  });
+
+  it("replies 400 for reflect: true with another strategy", async () => {
+    const { status, json } = await postChat(await startServer(setup().settings), {
+      message: "hi",
+      strategy: "react",
+      reflect: true,
+    });
+
+    assert.equal(status, 400);
+    assert.equal(json.error, "invalid_body");
+    assert.deepEqual(json.issues.map((issue: { path: unknown[] }) => issue.path), [["reflect"]]);
+  });
+
+  it("replies 422 for an unknown strategy and creates no conversation", async () => {
+    const store = new FakeConversationStore();
+    let created = 0;
+    const create = store.create.bind(store);
+    store.create = () => {
+      created += 1;
+      return create();
+    };
+    const { settings } = setup();
+    const { status, json } = await postChat(await startServer({ ...settings, conversations: store }), {
+      message: "hi",
+      strategy: "nope",
+    });
+
+    assert.equal(status, 422);
+    assert.deepEqual(json.knownStrategies, ["react", "plan-execute", "reflect"]);
+    assert.equal(created, 0);
   });
 });

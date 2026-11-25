@@ -876,8 +876,15 @@ describe("runChat: learning step", () => {
     ...(userId === undefined ? {} : { userId }),
   });
 
-  /** An outcome without its conversation id, which is a fresh UUID in every store. */
-  const comparable = ({ conversation, ...rest }: ChatOutcome) => ({ ...rest, historyMessages: conversation.historyMessages });
+  /**
+   * An outcome without its conversation id (a fresh UUID in every store) and without latency, which
+   * the graph measures on the clock.
+   */
+  const comparable = ({ conversation, ...rest }: ChatOutcome) => ({
+    ...rest,
+    result: rest.kind === "result" ? { ...rest.result, metrics: { ...rest.result.metrics, latencyMs: 0 } } : undefined,
+    historyMessages: conversation.historyMessages,
+  });
 
   const facts = async (memories: FakeMemoryStore) =>
     (await memories.recall(USER, LATER)).map((memory) => memory.fact);

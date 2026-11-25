@@ -1,20 +1,21 @@
-import { historyBlock, MAX_VERBATIM, planHistory, withHistory } from "../agents/history.ts";
+import { historyBlock, MAX_VERBATIM, planHistory } from "../agents/history.ts";
 import { cleanSummary, createHistorySummarizer, renderSummary } from "../agents/history-summarizer.ts";
 import { LlmCallCounter } from "../agents/llm-counter.ts";
 import { createLearningReflector, type LearningOutcome } from "../agents/learning-reflector.ts";
-import { createStrategy } from "../agents/index.ts";
-import { memoryBlock, withMemories } from "../agents/memories.ts";
+import { createRouteStrategy } from "../agents/index.ts";
+import { memoryBlock } from "../agents/memories.ts";
 import { createMemoryTools } from "../agents/memory-tools.ts";
 import { contextBreakdown, toolDefinitionsText } from "../context/breakdown.ts";
 import type { ConversationSummary, NewMessage, RecalledMemory } from "../domain/schemas.ts";
-import type { ReasoningStrategy } from "../domain/types.ts";
+import type { ReasoningStrategy, Route } from "../domain/types.ts";
+import { runProductionGraph, type ProductionGraphResult } from "../graph/production-graph.ts";
+import { requestedRoute } from "../graph/routing.ts";
 import type { StrategyDependencies } from "../agents/react.ts";
 import {
   learningLogLine,
   messagesToSave,
   shouldLearn,
   summaryLogLine,
-  withSummarization,
   type ChatOutcome,
   type RunOutcome,
   type SummarizationStep,
@@ -53,23 +54,19 @@ export async function runWithTimeout<T>(
   }
 }
 
-/** Runs the strategy under the timeout and reports what happened to the run. */
-async function runTimed(
+/** Runs the graph under the timeout and reports what happened to the run. */
+async function runGraphTimed(
   settings: ResolvedSettings,
-  strategy: ReasoningStrategy,
-  message: string,
-): Promise<RunOutcome> {
-  const timed = await runWithTimeout(
-    (signal) => strategy.run(message, { maxIterations: settings.maxIterations, signal }),
-    settings.timeoutMs,
-  );
+  run: (signal: AbortSignal) => Promise<ProductionGraphResult>,
+): Promise<{ outcome: RunOutcome; graph?: ProductionGraphResult }> {
+  const timed = await runWithTimeout(run, settings.timeoutMs);
   switch (timed.kind) {
     case "done":
-      return { kind: "result", result: timed.value };
+      return { outcome: { kind: "result", result: timed.value.result }, graph: timed.value };
     case "thrown":
-      return { kind: "thrown", error: timed.error };
+      return { outcome: { kind: "thrown", error: timed.error } };
     case "timeout":
-      return { kind: "timeout", timeoutMs: settings.timeoutMs };
+      return { outcome: { kind: "timeout", timeoutMs: settings.timeoutMs } };
   }
 }
 
@@ -124,14 +121,16 @@ async function summarize(
 }
 
 /**
- * Looks the strategy up, loads the history, recalls the user's facts, summarizes the history when a
- * batch is due, starts the conversation if needed, runs the strategy with all of it under the
- * timeout, saves a completed exchange, and reports what happened.
+ * Checks a forced route, loads the history, recalls the user's facts, starts the conversation if
+ * needed, runs the production graph under the timeout, saves a completed exchange, and reports what
+ * happened.
  *
- * The agent gets the user's facts, then the conversation summary, then the messages the summary does
- * not cover (8 to 14, word for word), then the request. A summarization happens only on a batch
- * boundary (see `planHistory`), runs after recall under its own timeout, and never fails the
- * request: if it fails, the agent gets the previous summary and the newest 14 uncovered messages.
+ * The graph is `context -> router -> react | plan-execute | reflect -> response`. The context node
+ * gives the agent the user's facts, then the conversation summary, then the messages the summary does
+ * not cover (8 to 14, word for word), then the request. It summarizes only on a batch boundary (see
+ * `planHistory`), under its own 30 s cap, and never fails the request: if it fails, the agent gets the
+ * previous summary and the newest 14 uncovered messages. That time counts toward the request timeout.
+ * The router picks the strategy unless the caller forced one, and a router failure falls back to react.
  *
  * After the save, a completed run of a known user starts the learning step in the background. It is
  * tracked in `settings.background` and never awaited here, so the reply never waits for it; it
@@ -142,15 +141,25 @@ async function summarize(
  * created, so none of them leaves an empty conversation behind.
  */
 export async function runChat(settings: ResolvedSettings, request: ChatRequest): Promise<ChatOutcome> {
+  const override = requestedRoute(request);
   const { conversations, memories } = settings;
   const { userId } = request;
   const dependencies = settings.createDependencies();
   // The memory tools exist only for a known user, so the agent can never save a fact for nobody.
   const tools =
     userId === undefined ? dependencies.tools : [...dependencies.tools, ...createMemoryTools(memories, userId)];
-  const strategy = createStrategy(settings.registry, request.strategy, { ...dependencies, tools }, {
-    reflect: request.reflect,
-  });
+  // Only the chosen route's strategy is built, once, so a request pays for one critic at most.
+  const strategies = new Map<Route, ReasoningStrategy>();
+  const strategyFor = (route: Route): ReasoningStrategy => {
+    let strategy = strategies.get(route);
+    if (strategy === undefined) {
+      strategy = createRouteStrategy(settings.registry, route, { ...dependencies, tools });
+      strategies.set(route, strategy);
+    }
+    return strategy;
+  };
+  // A forced route is checked first, so an unknown name reads and writes nothing (422).
+  if (override !== undefined) strategyFor(override);
 
   // The summary stands for the oldest messages; the rest are the "uncovered" ones. Both reads throw
   // ConversationNotFoundError for an unknown id, before anything is created.
@@ -162,27 +171,39 @@ export async function runChat(settings: ResolvedSettings, request: ChatRequest):
   const plan = planHistory(uncovered);
   // Recall runs outside the run timeout: the first call loads the model, which takes seconds.
   const recalled: RecalledMemory[] = userId === undefined ? [] : await memories.recall(userId, request.message);
-
-  // Due only for an existing conversation, because it needs older messages. After recall, so a failed
-  // recall wastes no model call; before the run, so the agent reads the new summary.
-  const step: SummarizationStep =
-    request.conversationId !== undefined && plan.toSummarize.length > 0
-      ? await summarize(settings, dependencies.model, request.conversationId, previous, plan.toSummarize)
-      : { kind: "not_due" };
-  const logLine = summaryLogLine(request.conversationId ?? "", step, settings.summaryTimeoutMs);
-  if (logLine) console[logLine.stream](logLine.line);
-
-  // A stored summary covers the messages it absorbed; after a failure the previous one stands, and the
-  // uncovered messages are capped so a provider outage cannot grow the context.
-  const stored = step.kind === "stored";
-  const history = stored ? plan.verbatim : plan.toSummarize.length > 0 ? uncovered.slice(-MAX_VERBATIM) : plan.verbatim;
-  const summaryText = stored ? step.rendered : previous === undefined ? "" : renderSummary(previous.summary);
   const conversationId = request.conversationId ?? conversations.create().id;
 
-  const outcome = withSummarization(
-    await runTimed(settings, withHistory(withMemories(strategy, recalled), history, summaryText), request.message),
-    step,
+  // Due only for an existing conversation, because it needs older messages. It runs in the graph's
+  // context node, after recall (so a failed recall wastes no model call) and before the agent reads.
+  const summarizeStep = async (): Promise<SummarizationStep> => {
+    const step: SummarizationStep =
+      request.conversationId !== undefined && plan.toSummarize.length > 0
+        ? await summarize(settings, dependencies.model, request.conversationId, previous, plan.toSummarize)
+        : { kind: "not_due" };
+    const logLine = summaryLogLine(request.conversationId ?? "", step, settings.summaryTimeoutMs);
+    if (logLine) console[logLine.stream](logLine.line);
+    return step;
+  };
+  // After a failed or skipped summarization the previous summary stands, and the uncovered messages
+  // are capped so a provider outage cannot grow the context.
+  const fallbackHistory = plan.toSummarize.length > 0 ? uncovered.slice(-MAX_VERBATIM) : plan.verbatim;
+  const previousSummary = previous === undefined ? "" : renderSummary(previous.summary);
+
+  const { outcome, graph } = await runGraphTimed(settings, (signal) =>
+    runProductionGraph(
+      {
+        router: settings.createRouter(dependencies.model),
+        strategyFor,
+        summarize: summarizeStep,
+        maxIterations: settings.maxIterations,
+      },
+      { message: request.message, override, recalled, verbatim: plan.verbatim, fallbackHistory, previousSummary },
+      { signal },
+    ),
   );
+  // A run that threw or timed out never reached the context node's result, so the fallback stands.
+  const history = graph?.history ?? fallbackHistory;
+  const summaryText = graph?.summaryText ?? previousSummary;
 
   // DatabaseSync is synchronous and there is no await between the two appends, so no other request
   // can slip in between them. A run that timed out saves nothing, even if it finishes late.
@@ -201,7 +222,7 @@ export async function runChat(settings: ResolvedSettings, request: ChatRequest):
 
   // The five texts the agent starts with, as it receives them: measuring them adds no model call.
   const context = contextBreakdown({
-    system: strategy.systemPrompt ?? "",
+    system: strategyFor(graph?.decision.route ?? override ?? "react").systemPrompt ?? "",
     tools: toolDefinitionsText(tools),
     history: historyBlock(history, summaryText),
     memories: memoryBlock(recalled),
